@@ -1,0 +1,25 @@
+services:
+  rt-detrv2:
+    build: .
+    image: rt_detrv2:v1.0
+    container_name: rt_detrv2_dev
+    shm_size: 32gb
+    deploy:
+      resources:
+        limits:
+          memory: 32g  # Limita el uso de memoria RAM del contenedor (ajustable según necesidad)
+          cpus: "12.0"  # Asigna hasta 12 núcleos del i9 para maximizar el rendimiento
+    volumes:
+      - ./rtdetrv2_pytorch:/app/RT-DETR # Monta el código fuente en el contenedor
+    ports:
+      - "6006:6006"  # Mapea el puerto de TensorBoard
+      - "8502:8502"  # Puerto para streamlit
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+      - NCCL_DEBUG=INFO
+    runtime: nvidia
+    ipc: host
+    stdin_open: true
+    tty: true
