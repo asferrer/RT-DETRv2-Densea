@@ -108,57 +108,25 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     model.eval()
     criterion.eval()
     coco_evaluator.cleanup()
-
-    metric_logger = MetricLogger(delimiter="  ")
-    # metric_logger.add_meter('class_error', SmoothedValue(window_size=1, fmt='{value:.2f}'))
-    header = 'Test:'
-    
-    # iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessor.keys())
     iou_types = coco_evaluator.iou_types
 
-    all_targets = []
-    all_predictions = []
+    metric_logger = MetricLogger(delimiter="  ")
+    header = 'Test:'
+    
+    for samples, targets in metric_logger.log_every(data_loader, 10, header):
+        samples = samples.to(device)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-    # coco_evaluator = CocoEvaluator(base_ds, iou_types)
-    # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
-    with torch.no_grad():
-        for samples, targets in metric_logger.log_every(data_loader, 10, header):
-            samples = samples.to(device)
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
+        with torch.autocast(device_type=str(device)):
             outputs = model(samples)
-            # with torch.autocast(device_type=str(device)):
-            #     outputs = model(samples)
 
-            # TODO (lyuwenyu), fix dataset converted using `convert_to_coco_api`?
-            orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
-            # orig_target_sizes = torch.tensor([[samples.shape[-1], samples.shape[-2]]], device=samples.device)
-            
-            results = postprocessor(outputs, orig_target_sizes)
+        orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
+        
+        results = postprocessor(outputs, orig_target_sizes)
 
-            # if 'segm' in postprocessor.keys():
-            #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
-            #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
-            
-            for result, target in zip(results, targets):
-                # Verifica si las dimensiones coinciden antes de agregarlas
-                pred_labels = result["labels"].cpu().tolist()
-                true_labels = target["labels"].cpu().tolist()
-
-                if len(pred_labels) != len(true_labels):
-                    print(f"Desajuste detectado: {len(pred_labels)} predicciones, {len(true_labels)} valores reales")
-                    continue
-
-                all_predictions.extend(pred_labels)
-                all_targets.extend(true_labels)
-            
-            res = {target['image_id'].item(): output for target, output in zip(targets, results)}
-            if coco_evaluator is not None:
-                coco_evaluator.update(res)
-
-    # Validar consistencia antes de classification_report
-    if len(all_targets) != len(all_predictions):
-        raise ValueError(f"Inconsistencia: {len(all_targets)} targets y {len(all_predictions)} predicciones")
+        res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+        if coco_evaluator is not None:
+            coco_evaluator.update(res)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -178,14 +146,5 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
         if 'segm' in iou_types:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
-
-
-    stats = {}
-
-    if coco_evaluator is not None:
-        if 'bbox' in iou_types:
-            stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
-        if 'segm' in iou_types:
-            stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
-
+            
     return stats, coco_evaluator
