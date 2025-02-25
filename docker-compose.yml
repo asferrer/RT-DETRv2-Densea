@@ -2,7 +2,7 @@ services:
   rt-detrv2:
     build: .
     image: rt_detrv2:v1.0
-    container_name: rt_detrv2_dev
+    container_name: rt_detrv2
     shm_size: 32gb
     deploy:
       resources:

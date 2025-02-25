@@ -31,7 +31,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         albumentations \
         pycocotools \
         PyYAML \
-        tensorboard
+        tensorboard \
+        tqdm
 
 # Establecer el directorio de trabajo
 WORKDIR /app/RT-DETR

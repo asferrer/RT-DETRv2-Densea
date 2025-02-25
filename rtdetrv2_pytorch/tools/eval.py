@@ -1,7 +1,10 @@
+
 #!/usr/bin/env python
 """
-Script para evaluar el modelo configurado y, opcionalmente, visualizar (dibujar)
-las inferencias (cajas, etiquetas y scores) sobre las imágenes.
+Script de evaluación para RT-DETR-V2 que procesa el dataloader de validación una única vez,
+guardando las imágenes inferidas (si se activa --draw) y acumulando las métricas adicionales
+(para calcular la matriz de confusión y el reporte de clasificación) a partir de la misma inferencia.
+Se aplican optimizaciones de eficiencia: uso de AMP, half precision y liberación periódica de caché.
 """
 
 import os
@@ -10,52 +13,97 @@ import argparse
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+from tqdm import tqdm  # Barra de progreso
+import colorsys
+import numpy as np
+from sklearn.metrics import confusion_matrix, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Se añade el directorio padre para poder importar YAMLConfig y otros módulos internos.
+# Agregar directorio padre para importar YAMLConfig y otros módulos internos
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from src.core import YAMLConfig
 
-def draw_inferences(image: Image.Image, labels: torch.Tensor, boxes: torch.Tensor, scores: torch.Tensor, threshold: float = 0.6, save_path: str = None):
-    """
-    Dibuja las inferencias sobre una imagen (objetos PIL). Para cada detección con score mayor
-    al umbral se dibuja un rectángulo en rojo y se escribe la etiqueta junto al score en azul.
-    
-    Args:
-        image (PIL.Image): Imagen original sobre la que dibujar.
-        labels (torch.Tensor): Tensor con las etiquetas de detección.
-        boxes (torch.Tensor): Tensor con las coordenadas de las cajas [xmin, ymin, xmax, ymax].
-        scores (torch.Tensor): Tensor con las puntuaciones de detección.
-        threshold (float): Umbral para filtrar detecciones.
-        save_path (str): Ruta para guardar la imagen con inferencias. Si es None, no se guarda.
-    """
+########################
+# Funciones auxiliares de visualización
+########################
+
+def generate_color_map_from_label_map(label_map: dict) -> dict:
+    keys = sorted(label_map.keys())
+    n = len(keys)
+    color_map = {}
+    for i, key in enumerate(keys):
+        hue = i / n
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.9, 0.9)
+        color_hex = '#{0:02x}{1:02x}{2:02x}'.format(int(r*255), int(g*255), int(b*255))
+        color_map[key] = color_hex
+    return color_map
+
+def get_label_map(dataset) -> dict:
+    label_map = {}
+    try:
+        categories = dataset.coco.dataset.get('categories', [])
+        for cat in categories:
+            label_map[cat['id']] = cat['name']
+    except Exception as e:
+        print(f"No se pudo obtener el mapeo de etiquetas: {e}")
+    return label_map
+
+def draw_inferences(image: Image.Image, labels: torch.Tensor, boxes: torch.Tensor, scores: torch.Tensor,
+                     label_map=None, color_map=None, threshold: float = 0.5, 
+                     save_path: str = None, radius: int = 2):
     draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
     
-    # Se filtran las detecciones que superan el umbral
     valid_indices = scores > threshold
+    if valid_indices.sum() == 0:
+        # Si no se detecta nada, devuelve la imagen original
+        return image
     valid_labels = labels[valid_indices]
     valid_boxes = boxes[valid_indices]
     valid_scores = scores[valid_indices]
-    
+    padding = 2  
     for j, box in enumerate(valid_boxes):
-        # Se transforma el tensor a lista de coordenadas
-        b = list(box)
-        # Dibujar el rectángulo (se puede ajustar el grosor si es necesario)
-        draw.rectangle(b, outline='red', width=2)
-        # Dibujar la etiqueta y el score sobre la imagen
-        text = f"{valid_labels[j].item()} {valid_scores[j].item():.2f}"
-        draw.text((b[0], b[1]), text, fill='blue')
-        print(text)
+        x0, y0, x1, y1 = map(int, box)
+        pred_id = valid_labels[j].item() + 1  # Ajuste para 0-indexados
+        color = color_map.get(pred_id, "black") if color_map is not None else "black"
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=color, width=1)
+        if label_map is not None:
+            label_text = label_map.get(pred_id, str(pred_id))
+        else:
+            label_text = str(pred_id)
+        text = f"{label_text} {valid_scores[j].item():.2f}"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if y0 - text_height - padding >= 0:
+            text_position = (x0 + padding, y0 - text_height - padding)
+        else:
+            text_position = (x0 + padding, y1 + padding)
+        draw.text(text_position, text, font=font, fill=color, stroke_width=1, stroke_fill="black")
     
     if save_path is not None:
         image.save(save_path)
-        print(f"Imagen guardada en: {save_path}")
+    return image
+
+########################
+# Funciones de conversión entre PIL y OpenCV
+########################
+
+def pil_to_cv2(image: Image.Image) -> np.ndarray:
+    image = np.array(image)
+    return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+def cv2_to_pil(frame: np.ndarray) -> Image.Image:
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(frame)
+
+########################
+# Clase ModelWrapper
+########################
 
 class ModelWrapper(nn.Module):
-    """
-    Esta clase envuelve al modelo y al postprocesador. Se utiliza el método deploy()
-    de cada componente para obtener la versión lista para inferencia.
-    """
     def __init__(self, cfg):
         super(ModelWrapper, self).__init__()
         self.model = cfg.model.deploy()
@@ -64,163 +112,233 @@ class ModelWrapper(nn.Module):
     def forward(self, images, orig_target_sizes):
         outputs = self.model(images)
         outputs = self.postprocessor(outputs, orig_target_sizes)
-        return outputs  # Se espera una tupla: (labels, boxes, scores)
+        return outputs  # (labels, boxes, scores)
 
-def evaluate_on_image(args, cfg, device):
-    """
-    Realiza inferencia sobre una única imagen.
-    
-    Args:
-        args: Argumentos parseados (de argparse).
-        cfg: Configuración cargada (YAMLConfig).
-        device: Dispositivo de cómputo (cpu o cuda).
-    """
-    # Se carga la imagen y se conserva su tamaño original.
-    im_pil = Image.open(args.im_file).convert('RGB')
-    w, h = im_pil.size
-    orig_size = torch.tensor([w, h])[None].to(device)
-    
-    # Se define la transformación: se reescala a 640x640 y se convierte a tensor.
-    transform = T.Compose([
-        T.Resize((640, 640)),
-        T.ToTensor(),
-    ])
-    im_tensor = transform(im_pil)[None].to(device)
-    
-    # Se construye el modelo para inferencia.
-    model = ModelWrapper(cfg).to(device)
-    model.eval()
-    
-    with torch.no_grad():
-        outputs = model(im_tensor, orig_size)
-        # Se espera que outputs sea una tupla: (labels, boxes, scores)
-        labels, boxes, scores = outputs
-    
-    # Si se solicita la visualización, se dibujan las inferencias sobre la imagen
-    if args.draw:
-        # Se crea una copia para no modificar la imagen original.
-        im_copy = im_pil.copy()
-        out_path = os.path.join(args.output_dir, "result_single.jpg")
-        draw_inferences(im_copy, labels[0], boxes[0], scores[0], threshold=0.6, save_path=out_path)
-    else:
-        # Solo se muestran los resultados por consola.
-        for j in range(len(labels[0])):
-            if scores[0][j] > 0.6:
-                print(f"Label: {labels[0][j].item()}, Score: {scores[0][j].item():.2f}")
+########################
+# Función para obtener subcarpeta según imagen
+########################
+
+def get_subfolder_for_image(file_path: str, image_dirs: list) -> str:
+    file_path = os.path.abspath(file_path)
+    for img_dir in image_dirs:
+        img_dir = os.path.abspath(img_dir)
+        if file_path.startswith(img_dir):
+            return os.path.basename(img_dir)
+        elif os.path.basename(img_dir) in file_path:
+            return os.path.basename(img_dir)
+    return "unknown"
+
+########################
+# Funciones para métricas adicionales (integradas en una única pasada)
+########################
+
+def iou(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    return interArea / float(boxAArea + boxBArea - interArea + 1e-6)
+
+def match_detections_in_image(gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=0.5):
+    preds = sorted(zip(pred_boxes, pred_labels, pred_scores), key=lambda x: x[2], reverse=True)
+    matched_pairs = []
+    unmatched_pred = []
+    assigned_gt = set()
+    for p_box, p_label, p_score in preds:
+        best_iou = 0
+        best_gt_idx = None
+        for idx, (gt_box, gt_label) in enumerate(zip(gt_boxes, gt_labels)):
+            if idx in assigned_gt:
+                continue
+            current_iou = iou(p_box, gt_box)
+            if current_iou > best_iou:
+                best_iou = current_iou
+                best_gt_idx = idx
+        if best_iou >= iou_thresh and best_gt_idx is not None:
+            assigned_gt.add(best_gt_idx)
+            matched_pairs.append((gt_labels[best_gt_idx], p_label))
+        else:
+            unmatched_pred.append(p_label)
+    unmatched_gt = [gt_labels[i] for i in range(len(gt_labels)) if i not in assigned_gt]
+    return matched_pairs, unmatched_gt, unmatched_pred
+
+########################
+# Función de evaluación integrada (una sola pasada)
+########################
 
 def evaluate_on_dataset(args, cfg, device):
-    """
-    Realiza la evaluación sobre el conjunto de validación (dataset).
-    Se itera sobre el dataloader definido en la configuración, se realizan las inferencias
-    y se actualiza el evaluador (por ejemplo, CocoEvaluator) si está disponible.
-    
-    Además, si se solicita la visualización, para cada imagen se intentará cargar la imagen
-    original (usando la información del batch) y se guardará una copia con las inferencias.
-    
-    Args:
-        args: Argumentos parseados.
-        cfg: Configuración cargada (YAMLConfig).
-        device: Dispositivo de cómputo.
-    """
-    # Se construye el modelo para evaluación.
     model = ModelWrapper(cfg).to(device)
     model.eval()
-    
-    # Se obtiene el dataloader de validación a partir de la configuración.
     dataloader = cfg.val_dataloader
     evaluator = None
     if hasattr(cfg, 'evaluator'):
         evaluator = cfg.evaluator
+    image_dirs = cfg.val_dataloader.dataset.image_dirs if isinstance(cfg.val_dataloader.dataset.image_dirs, list) else [cfg.val_dataloader.dataset.image_dirs]
+    label_map = get_label_map(cfg.val_dataloader.dataset)
+    color_map = generate_color_map_from_label_map(label_map)
+    os.makedirs(args.base_eval_dir, exist_ok=True)
     
-    if args.draw:
-        os.makedirs(args.output_dir, exist_ok=True)
+    # Listas para métricas adicionales (acumulación en la misma pasada)
+    all_y_true = []
+    all_y_pred = []
+    batch_count = 0
     
-    # Se itera sobre el dataloader
-    for idx, batch in enumerate(dataloader):
-        # Se asume que el batch es un diccionario con al menos la llave 'img'.
-        # Opcionalmente, se esperan las llaves 'targets' (ground truth) y 'file_name' (ruta original de la imagen).
+    for idx, batch in enumerate(tqdm(dataloader, desc="Evaluando batches", unit="batch")):
         if isinstance(batch, dict):
             images = batch['img']
             targets = batch.get('targets', None)
-            # Se verifica si el batch contiene el tamaño original de la imagen.
             if 'orig_size' in batch:
                 orig_sizes = batch['orig_size']
             else:
-                # En caso contrario, se asume un tamaño fijo (aunque lo ideal es contar con la información original).
                 B = images.shape[0]
                 orig_sizes = torch.tensor([[640, 640]] * B).to(device)
             file_names = batch.get('file_name', None)
         elif isinstance(batch, (list, tuple)):
-            # Se asume que el batch es (images, targets)
             images, targets = batch
             B = images.shape[0]
             orig_sizes = torch.tensor([[640, 640]] * B).to(device)
             file_names = None
         else:
             raise ValueError("Formato de batch no reconocido.")
-        
         images = images.to(device)
-        
         with torch.no_grad():
-            # Nos aseguramos de que orig_sizes tenga forma [batch_size, 2]
             if orig_sizes.dim() == 1:
                 orig_sizes = orig_sizes.unsqueeze(0)
-            outputs = model(images, orig_sizes)
-            # Se espera que outputs sea una tupla: (labels, boxes, scores)
+            if device.type == "cuda":
+                with torch.cuda.amp.autocast():
+                    outputs = model(images, orig_sizes)
+            else:
+                outputs = model(images, orig_sizes)
         labels_batch, boxes_batch, scores_batch = outputs
         
-        # Si se dispone de un evaluador y de las anotaciones ground truth, se actualiza
-        if evaluator is not None and targets is not None:
-            # Se itera sobre cada imagen del batch y se construye la predicción en el formato esperado.
-            batch_predictions = {}
-            for i in range(len(labels_batch)):
-                # Extraer image_id del ground truth si está presente; de lo contrario usar el índice.
-                if "image_id" in targets[i]:
-                    image_id = int(targets[i]["image_id"].item()) if isinstance(targets[i]["image_id"], torch.Tensor) else int(targets[i]["image_id"])
-                else:
-                    image_id = i
-                
-                batch_predictions[image_id] = {
-                    "boxes": boxes_batch[i].cpu(),
-                    "labels": labels_batch[i].cpu(),
-                    "scores": scores_batch[i].cpu(),
-                }
-            evaluator.update(batch_predictions)
-        else:
-            print("No se dispone de evaluador o anotaciones ground truth en este batch.")
+        # Acumular métricas adicionales para cada imagen del batch
+        for i in range(B):
+            gt_boxes = []
+            gt_labels = []
+            if targets is not None and isinstance(targets[i], dict) and "annotations" in targets[i]:
+                for ann in targets[i]["annotations"]:
+                    if "bbox" in ann and "category_id" in ann:
+                        gt_boxes.append(ann["bbox"])
+                        gt_labels.append(ann["category_id"])
+            pred_boxes = boxes_batch[i].cpu().tolist()
+            pred_labels = [int(x.item())+1 for x in labels_batch[i].cpu()]
+            pred_scores = scores_batch[i].cpu().tolist()
+            # Si no hay ground truth ni predicciones, se omite esta imagen
+            if len(gt_boxes) == 0 and len(pred_boxes) == 0:
+                continue
+            matched, unmatched_gt, unmatched_pred = match_detections_in_image(
+                gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=0.5
+            )
+            for gt_lab, pred_lab in matched:
+                all_y_true.append(gt_lab)
+                all_y_pred.append(pred_lab)
+            for gt_lab in unmatched_gt:
+                all_y_true.append(gt_lab)
+                all_y_pred.append(0)
+            for pred_lab in unmatched_pred:
+                all_y_true.append(0)
+                all_y_pred.append(pred_lab)
         
-        # Si se solicita la visualización y se cuenta con la ruta original de la imagen, se dibujan las inferencias.
-        if args.draw and file_names is not None:
-            for i, fname in enumerate(file_names):
-                try:
-                    im = Image.open(fname).convert('RGB')
-                except Exception as e:
-                    print(f"Error al cargar la imagen {fname}: {e}")
-                    continue
-                out_fname = os.path.join(args.output_dir, f"result_{os.path.basename(fname)}")
-                draw_inferences(im, labels_batch[i], boxes_batch[i], scores_batch[i], threshold=0.6, save_path=out_fname)
-        elif args.draw:
-            print("No se encontraron nombres de archivo en el batch para dibujar las inferencias. Se dibujarán usando las imágenes del batch.")
-            # Asumir que las imágenes ya se tienen en el batch:
-            for i in range(images.shape[0]):
-                # Convertir la imagen tensor a PIL si es necesario (suponiendo que el tensor está en [C,H,W])
-                im = T.ToPILImage()(images[i].cpu())
-                out_fname = os.path.join(args.output_dir, f"result_batch_{idx}_{i}.jpg")
-                draw_inferences(im, labels_batch[i], boxes_batch[i], scores_batch[i], threshold=0.6, save_path=out_fname)
-
+        # Si se desea guardar imágenes con inferencias
+        if args.draw:
+            if file_names is not None:
+                for i, fname in enumerate(file_names):
+                    try:
+                        im = Image.open(fname).convert('RGB')
+                    except Exception as e:
+                        print(f"Error al cargar la imagen {fname}: {e}")
+                        continue
+                    out_fname = os.path.join(args.base_eval_dir, "predicted_images",f"result_{os.path.basename(fname)}")
+                    draw_inferences(im, labels_batch[i], boxes_batch[i], scores_batch[i],
+                                    label_map=label_map, color_map=color_map, threshold=0.5, save_path=out_fname)
+            else:
+                for i in range(images.shape[0]):
+                    fname = targets[i].get("file_name", None) if isinstance(targets[i], dict) else None
+                    subfolder = get_subfolder_for_image(fname, image_dirs) if fname is not None else "unknown"
+                    out_fname = os.path.join(args.base_eval_dir, "predicted_images", f"result_batch_{idx}_{i}.jpg")
+                    im = T.ToPILImage()(images[i].cpu())
+                    draw_inferences(im, labels_batch[i], boxes_batch[i], scores_batch[i],
+                                    label_map=label_map, color_map=color_map, threshold=0.5, save_path=out_fname)
+        batch_count += 1
+        if device.type == "cuda" and batch_count % 20 == 0:
+            torch.cuda.empty_cache()
     
-    # Una vez evaluado todo el dataset, se calculan y muestran las métricas (si el evaluador está definido)
-    if evaluator is not None:
-        # Sincronizar (si es necesario en tu entorno distribuido)
-        evaluator.synchronize_between_processes()
-        evaluator.accumulate()
-        evaluator.summarize()
+    # Calcular y guardar métricas adicionales en una sola pasada
+    all_labels = [0] + sorted(label_map.keys())
+    cm = confusion_matrix(all_y_true, all_y_pred, labels=all_labels)
+    report = classification_report(
+        all_y_true, all_y_pred, labels=all_labels,
+        target_names=["background"] + [label_map[k] for k in sorted(label_map.keys())]
+    )
+    
+    # Guardar matriz de confusión
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", 
+                xticklabels=["background"] + [label_map[k] for k in sorted(label_map.keys())],
+                yticklabels=["background"] + [label_map[k] for k in sorted(label_map.keys())])
+    plt.xlabel("Predicción")
+    plt.ylabel("Ground Truth")
+    plt.title("Matriz de Confusión")
+    cm_path = os.path.join(args.base_eval_dir, "confusion_matrix.png")
+    plt.tight_layout()
+    plt.savefig(cm_path)
+    plt.close()
+    print(f"\nMatriz de Confusión guardada en: {cm_path}")
+    
+    # Guardar reporte de clasificación
+    plt.figure(figsize=(8, 8))
+    plt.text(0.01, 0.05, report, {'fontsize': 10}, fontproperties='monospace')
+    plt.axis('off')
+    plt.title("Reporte de Clasificación")
+    report_path = os.path.join(args.base_eval_dir, "classification_report.png")
+    plt.tight_layout()
+    plt.savefig(report_path)
+    plt.close()
+    print(f"\nReporte de Clasificación guardado en: {report_path}")
+
+########################
+# Funciones de evaluación "clásica"
+########################
+
+def evaluate_on_image(args, cfg, device):
+    im_pil = Image.open(args.im_file).convert('RGB')
+    w, h = im_pil.size
+    orig_size = torch.tensor([w, h])[None].to(device)
+    transform = T.Compose([T.Resize((640, 640)), T.ToTensor()])
+    im_tensor = transform(im_pil)[None].to(device)
+    model = ModelWrapper(cfg).to(device)
+    model.eval()
+    with torch.no_grad():
+        if device.type == "cuda":
+            with torch.cuda.amp.autocast():
+                outputs = model(im_tensor, orig_size)
+        else:
+            outputs = model(im_tensor, orig_size)
+        labels, boxes, scores = outputs
+    label_map = get_label_map(cfg.val_dataloader.dataset)
+    color_map = generate_color_map_from_label_map(label_map)
+    if args.draw:
+        im_copy = im_pil.copy()
+        out_path = os.path.join(args.base_eval_dir, "result_single.jpg")
+        draw_inferences(im_copy, labels[0], boxes[0], scores[0],
+                        label_map=label_map, color_map=color_map, threshold=0.5, save_path=out_path)
     else:
-        print("Evaluación completada. No se dispone de un evaluador para calcular métricas.")
+        for j in range(len(labels[0])):
+            if scores[0][j] > 0.5:
+                pred_id = labels[0][j].item() + 1
+                label_text = label_map.get(pred_id, str(pred_id))
+                print(f"Label: {label_text}, Score: {scores[0][j].item():.2f}")
+
+########################
+# Función principal
+########################
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Script de evaluación del modelo con opción de visualización de inferencias."
+        description="Script de evaluación del modelo con opción de visualización de inferencias y métricas adicionales en una única pasada."
     )
     parser.add_argument('-c', '--config', type=str, required=True,
                         help="Ruta al archivo de configuración YAML.")
@@ -231,40 +349,36 @@ def main():
     parser.add_argument('--im_file', type=str, default=None,
                         help="Ruta a una imagen individual para inferencia (modo imagen única).")
     parser.add_argument('--draw', action='store_true',
-                        help="Si se especifica, dibuja las inferencias sobre las imágenes.")
+                        help="Si se especifica, dibuja y guarda las imágenes con inferencias.")
     parser.add_argument('--output_dir', type=str, default='eval_results',
-                        help="Directorio para guardar las imágenes con inferencias dibujadas.")
-    
+                        help="Directorio base para guardar las imágenes y métricas.")
     args = parser.parse_args()
     device = torch.device(args.device)
     
-    # Se carga la configuración desde el YAML (se pueden pasar parámetros adicionales si fuera necesario)
+    config_name = os.path.splitext(os.path.basename(args.config))[0]
+    args.base_eval_dir = os.path.join(args.output_dir, config_name)
+    os.makedirs(args.base_eval_dir, exist_ok=True)
     cfg = YAMLConfig(args.config, resume=args.resume)
-    
-    # Se carga el checkpoint y se extrae el state_dict del modelo.
-    checkpoint = torch.load(args.resume, map_location='cpu')
+    checkpoint = torch.load(args.resume, map_location=device)
     if 'ema' in checkpoint:
         state = checkpoint['ema']['module']
     else:
         state = checkpoint['model']
-    
-    # Se carga el state_dict en el modelo (el modelo se creará al acceder a cfg.model)
     model_instance = cfg.model
     model_instance.load_state_dict(state)
     
-    # Se muestra en consola que se usará el directorio para guardar resultados (en caso de dibujo)
+    # Si se activa --draw, se informará dónde se guardarán las imágenes
     if args.draw:
-        os.makedirs(args.output_dir, exist_ok=True)
-        print(f"Las imágenes con inferencias se guardarán en: {args.output_dir}")
+        print(f"Las imágenes inferidas se guardarán en: {args.base_eval_dir}")
+        predicted_images_dir = os.path.join(args.base_eval_dir, "predicted_images")
+        os.makedirs(predicted_images_dir, exist_ok=True)
     
-    # Modo de evaluación: si se proporciona una imagen individual se evalúa sobre ella;
-    # de lo contrario se evalúa sobre el dataset de validación.
     if args.im_file is not None:
         print("Evaluación sobre imagen individual...")
         evaluate_on_image(args, cfg, device)
     else:
         print("Evaluación sobre dataset de validación...")
         evaluate_on_dataset(args, cfg, device)
-
+        
 if __name__ == '__main__':
     main()

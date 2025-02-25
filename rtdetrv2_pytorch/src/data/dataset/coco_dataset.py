@@ -249,26 +249,26 @@ class ConvertCocoPolysToMask(object):
         return image, target
 
 mscoco_category2name = {
-    1: "Can",
-    2: "Squared_Can",
-    3: "Wood",
-    4: "Bottle",
-    5: "Plastic_Bag",
-    6: "Glove",
-    7: "Fishing_Net",
-    8: "Tire",
-    9: "Packaging_Bag",
-    10: "WashingMachine",
-    11: "Metal_Chain",
-    12: "Rope",
-    13: "Towel",
-    14: "Plastic_Debris",
-    15: "Metal_Debris",
-    16: "Pipe",
-    17: "Shoe",
-    18: "Car_Bumper",
-    19: "Basket",
-    20: "Mask"
+    0: "Can",
+    1: "Squared_Can",
+    2: "Wood",
+    3: "Bottle",
+    4: "Plastic_Bag",
+    5: "Glove",
+    6: "Fishing_Net",
+    7: "Tire",
+    8: "Packaging_Bag",
+    9: "WashingMachine",
+    10: "Metal_Chain",
+    11: "Rope",
+    12: "Towel",
+    13: "Plastic_Debris",
+    14: "Metal_Debris",
+    15: "Pipe",
+    16: "Shoe",
+    17: "Car_Bumper",
+    18: "Basket",
+    19: "Mask"
 }
 
 mscoco_category2label = {k: i for i, k in enumerate(mscoco_category2name.keys())}
