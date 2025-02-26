@@ -1,0 +1,131 @@
+__include__: [
+  '../dataset/densea_detection_v2.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer_v2.yml',
+  './include/rtdetrv2_r50vd.yml',
+]
+
+#####################################################
+# Directorio de salida (donde se guardan pesos, logs)
+#####################################################
+output_dir: ./output/rtdetrv2_r50vd_densea_v5
+
+#####################################################
+# Configuración del modelo
+#####################################################
+PResNet:
+  depth: 18
+  freeze_at: 0
+  freeze_norm: True
+  pretrained: True
+
+HybridEncoder:
+  in_channels: [128, 256, 512]
+  hidden_dim: 256
+  expansion: 0.5
+
+RTDETRTransformerv2:
+  num_layers: 4  # Más capacidad para manejar dataset de fondo marino
+  num_queries: 300  # Aumenta el número de queries para detectar múltiples residuos
+  num_denoising: 100  # Denoising más robusto para estabilizar el entrenamiento
+  label_noise_ratio: 0.3
+  box_noise_scale: 0.9
+  num_points: [4, 4, 4]
+  cross_attn_method: default
+  query_select_method: default
+
+epoches: 200
+
+#####################################################
+# Configuración del optimizador
+#####################################################
+optimizer:
+  type: AdamW
+  params:
+    - 
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00005  # Aprendizaje reducido para el backbone preentrenado
+    - 
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.0
+
+  lr: 0.0001  # Aprendizaje principal más bajo para convergencia estable
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+lr_scheduler:
+  type: CosineAnnealingLR
+  T_max: 200  # Máximo número de epochs
+  eta_min: 0.00001
+
+lr_warmup_scheduler:
+  type: LinearWarmup
+  warmup_duration: 4000  # Aumentado para mayor estabilidad en los primeros pasos
+
+# Configuración de precisión y suavizado de pesos
+use_amp: False  # Activar AMP para mejor uso de recursos
+use_ema: True
+
+ema:
+  type: ModelEMA
+  decay: 0.9999
+  warmups: 2000  # Ajustado para 200 épocas
+
+clip_max_norm: 0.1  # Para evitar explosión de gradientes
+
+#####################################################
+# Configuración del dataloader
+#####################################################
+train_dataloader:
+  dataset:
+    type: MultiDirCocoDetection
+    image_dir:
+        - "/app/RT-DETR/dataset/cleansea_dataset/CocoFormatDataset/train_coco/JPEGImages"
+        - "/app/RT-DETR/dataset/Ocean_garbage/train"
+        - "/app/RT-DETR/dataset/Ocean_garbage/valid"
+        - "/app/RT-DETR/dataset/Neural_Ocean/train"
+        - "/app/RT-DETR/dataset/Neural_Ocean/valid"
+    anno_path: "/app/RT-DETR/dataset/annotations_combined_fixed.json"
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}  # Ajustado para condiciones de fondo marino
+        - {type: RandomGaussianBlur, kernel_size: 3, sigma: [0.1, 1.5], p: 0.3}
+        - {type: RandomNoise, mean: 0, std: 0.005, p: 0.3}
+        - {type: RandomRotation, degrees: 15, p: 0.4}  # Mayor rango de rotaciones
+        - {type: RandomZoomOut, fill: 0, p: 0.3}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: RandomHorizontalFlip, p: 0.5}
+        - {type: Resize, size: [640, 640]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 150  # Extendido para mantener data augmentation por más tiempo
+        ops: ['RandomPhotometricDistort', 'RandomGaussianBlur', 'RandomIoUCrop']
+
+  collate_fn:
+    type: BatchImageCollateFuncion
+    scales: [480, 512, 544, 576, 608, 640, 704]
+    stop_epoch: 150  # Ajustado para reducir el multiscale en la última parte
+
+  shuffle: True
+  total_batch_size: 16  # Ajustado para RTX 4080 con AMP
+  num_workers: 4  # Aumentado para aprovechar el i9
+
+val_dataloader:
+  dataset:
+    type: MultiDirCocoDetection
+    image_dir:
+        - "/app/RT-DETR/dataset/cleansea_dataset/CocoFormatDataset/test_coco/JPEGImages"
+        - "/app/RT-DETR/dataset/Ocean_garbage/test"
+        - "/app/RT-DETR/dataset/Neural_Ocean/test"
+    anno_path: "/app/RT-DETR/dataset/annotations_combined_fixed.json"
+    transforms:
+      ops:
+        - {type: Resize, size: [640, 640]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+  shuffle: False
+  total_batch_size: 16
+  num_workers: 4

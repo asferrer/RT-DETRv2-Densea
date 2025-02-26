@@ -1,3 +1,4 @@
+---
 task: detection
 
 evaluator:
@@ -5,19 +6,26 @@ evaluator:
   iou_types: ['bbox', ]
 
 num_classes: 20
-remap_mscoco_category: True
+remap_mscoco_category: False
 
 
 train_dataloader: 
   type: DataLoader
   dataset: 
-    type: CocoDetection
-    img_folder: ./dataset/cleansea_dataset/train/
-    ann_file: ./dataset/cleansea_dataset/train/annotations_bbox.json
+    type: MultiDirCocoDetection  # Cambiado de CocoDetection a MultiDirCocoDetection
+    image_dirs:
+      - ./dataset/cleansea_dataset/train/
+      - ./dataset/Ocean_garbage/train/
+      - ./dataset/Ocean_garbage/valid/
+      - ./dataset/Neural_Ocean/train/
+      - ./dataset/Neural_Ocean/valid/
+    ann_file: ./dataset/annotations_combined.json  # Reemplazado anno_path por ann_file
     return_masks: False
+    remap_mscoco_category: False
     transforms:
       type: Compose
-      ops: ~
+      ops:
+      
   shuffle: True
   num_workers: 0
   drop_last: True
@@ -28,10 +36,14 @@ train_dataloader:
 val_dataloader:
   type: DataLoader
   dataset: 
-    type: CocoDetection
-    img_folder: ./dataset/cleansea_dataset/test/
-    ann_file: ./dataset/cleansea_dataset/test/annotations_bbox.json
+    type: MultiDirCocoDetection  # Cambiado de CocoDetection a MultiDirCocoDetection
+    image_dirs:
+      - ./dataset/cleansea_dataset/test/
+      - ./dataset/Ocean_garbage/test/
+      - ./dataset/Neural_Ocean/test/
+    ann_file: ./dataset/annotations_combined.json  # Reemplazado anno_path por ann_file
     return_masks: False
+    remap_mscoco_category: False
     transforms:
       type: Compose
       ops: ~ 

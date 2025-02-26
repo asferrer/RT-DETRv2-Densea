@@ -1,135 +1,191 @@
-English | [简体中文](README_cn.md)
+# RT-DETRv2 for Marine Debris Detection
 
+![CUDA](https://img.shields.io/badge/CUDA-12.1.0-orange)
+![CUDNN](https://img.shields.io/badge/CUDNN-8.7.0-orange)
+![Python](https://img.shields.io/badge/Python-3.10-blue)
+![License](https://img.shields.io/badge/License-Apache%202.0-green)
+<a href="https://arxiv.org/abs/2407.17140">
+    <img alt="arXiv" src="https://img.shields.io/badge/arXiv-2407.17140-red">
+</a>
+<a href="mailto:your.email@example.com">
+    <img alt="email" src="https://img.shields.io/badge/contact_me-email-yellow">
+</a>
 
-<h2 align="center">RT-DETR: DETRs Beat YOLOs on Real-time Object Detection</h2>
-<p align="center">
-    <!-- <a href="https://github.com/lyuwenyu/RT-DETR/blob/main/LICENSE">
-        <img alt="license" src="https://img.shields.io/badge/LICENSE-Apache%202.0-blue">
-    </a> -->
-    <a href="https://github.com/lyuwenyu/RT-DETR/blob/main/LICENSE">
-        <img alt="license" src="https://img.shields.io/github/license/lyuwenyu/RT-DETR">
-    </a>
-    <a href="https://github.com/lyuwenyu/RT-DETR/pulls">
-        <img alt="prs" src="https://img.shields.io/github/issues-pr/lyuwenyu/RT-DETR">
-    </a>
-    <a href="https://github.com/lyuwenyu/RT-DETR/issues">
-        <img alt="issues" src="https://img.shields.io/github/issues/lyuwenyu/RT-DETR?color=pink">
-    </a>
-    <a href="https://github.com/lyuwenyu/RT-DETR">
-        <img alt="issues" src="https://img.shields.io/github/stars/lyuwenyu/RT-DETR">
-    </a>
-    <a href="https://arxiv.org/abs/2304.08069">
-        <img alt="arXiv" src="https://img.shields.io/badge/arXiv-2304.08069-red">
-    </a>
-    <a href="mailto: lyuwenyu@foxmail.com">
-        <img alt="emal" src="https://img.shields.io/badge/contact_me-email-yellow">
-    </a>
-</p>
+## Table of Contents
 
----
+- [Project Overview](#project-overview)
+- [Features](#features)
+- [Marine Debris Detection Goals](#marine-debris-detection-goals)
+- [Installation](#installation)
+  - [Using DevContainer](#using-devcontainer)
+  - [Using Conda & Pip](#using-conda--pip)
+- [Models](#models)
+- [Training Commands](#training-commands)
+- [Testing Commands](#testing-commands)
+- [Docker Setup](#docker-setup)
+- [Contributing](#contributing)
+- [License](#license)
+- [Citing](#citing)
+- [Contact](#contact)
 
+## Project Overview
 
-This is the official implementation of papers 
-- [DETRs Beat YOLOs on Real-time Object Detection](https://arxiv.org/abs/2304.08069)
-- [RT-DETRv2: Improved Baseline with Bag-of-Freebies for Real-Time Detection Transformer](https://arxiv.org/abs/2407.17140)
+Project **RT-DETRv2-DenSea** utilizes **RT-DETRv2**, a real-time object detection model, for the identification and classification of **marine debris** in underwater environments. The model is optimized for detecting waste materials on the ocean floor, improving upon previous object detection frameworks by incorporating transformer-based enhancements for **speed and accuracy**.
 
+This implementation is based on **RT-DETRv2** and leverages its strengths to handle the unique challenges of underwater detection, including **low visibility, diverse debris shapes, and complex marine environments**.
 
-<details>
-<summary>Fig</summary>
+## Features
 
-<table><tr>
-<td><img src=https://github.com/lyuwenyu/RT-DETR/assets/77494834/0ede1dc1-a854-43b6-9986-cf9090f11a61 border=0 width=500></td>
-<td><img src=https://github.com/user-attachments/assets/437877e9-1d4f-4d30-85e8-aafacfa0ec56 border=0 width=500></td>
-</tr></table>
-</details>
+- **High-Speed Marine Debris Detection:** RT-DETRv2 enables real-time object detection in underwater conditions.
+- **Transformer-Based Model:** Utilizes detection transformers for improved performance in occluded and low-light scenarios.
+- **Dataset Support:** Compatible with COCO and custom marine debris datasets (e.g., CleanSea).
+- **Lightweight & Efficient:** Optimized for deployment on embedded GPU devices such as NVIDIA Jetson and edge AI solutions.
+- **Dockerized Environment:** Includes a complete Docker setup for streamlined execution.
 
+## Marine Debris Detection Goals
 
+This project aims to assist marine conservation efforts by:
 
-## 🚀 Updates
-- \[2024.11.28\] Add torch tool for parameters and flops statistics. see [run_profile.py](./rtdetrv2_pytorch/tools/run_profile.py)
-- \[2024.10.10\] Add sliced inference support for small object detecion. [#468](https://github.com/lyuwenyu/RT-DETR/pull/468)
-- \[2024.09.23\] Add ✅[Regnet and DLA34](https://github.com/lyuwenyu/RT-DETR/tree/main/rtdetr_pytorch) for RTDETR.
-- \[2024.08.27\] Add hubconf.py file to support torch hub.
-- \[2024.08.22\] Improve the performance of ✅ [RT-DETRv2-S](./rtdetrv2_pytorch/) to 48.1 mAP (<font color=green>+1.6</font> compared to RT-DETR-R18).
-- \[2024.07.24\] Release ✅ [RT-DETRv2](./rtdetrv2_pytorch/)!
-- \[2024.02.27\] Our work has been accepted to CVPR 2024!
-- \[2024.01.23\] Fix difference on data augmentation with paper in rtdetr_pytorch [#84](https://github.com/lyuwenyu/RT-DETR/commit/5dc64138e439247b4e707dd6cebfe19d8d77f5b1).
-- \[2023.11.07\] Add pytorch ✅ *rtdetr_r34vd* for requests [#107](https://github.com/lyuwenyu/RT-DETR/issues/107), [#114](https://github.com/lyuwenyu/RT-DETR/issues/114).
-- \[2023.11.05\] Upgrade the logic of `remap_mscoco_category` to facilitate training of custom datasets, see detils in [*Train custom data*](./rtdetr_pytorch/) part. [#81](https://github.com/lyuwenyu/RT-DETR/commit/95fc522fd7cf26c64ffd2ad0c622c392d29a9ebf).
-- \[2023.10.23\] Add [*discussion for deployments*](https://github.com/lyuwenyu/RT-DETR/issues/95), supported onnxruntime, TensorRT, openVINO.
-- \[2023.10.12\] Add tuning code for pytorch version, now you can tuning rtdetr based on pretrained weights.
-- \[2023.09.19\] Upload ✅ [*pytorch weights*](https://github.com/lyuwenyu/RT-DETR/issues/42) convert from paddle version.
-- \[2023.08.24] Release RT-DETR-R18 pretrained models on objects365. *49.2 mAP* and *217 FPS*.
-- \[2023.08.22\] Upload ✅ [*rtdetr_pytorch*](./rtdetr_pytorch/) source code. Please enjoy it!
-- \[2023.08.15\] Release RT-DETR-R101 pretrained models on objects365. *56.2 mAP* and *74 FPS*.
-- \[2023.07.30\] Release RT-DETR-R50 pretrained models on objects365. *55.3 mAP* and *108 FPS*.
-- \[2023.07.28\] Fix some bugs, and add some comments. [1](https://github.com/lyuwenyu/RT-DETR/pull/14), [2](https://github.com/lyuwenyu/RT-DETR/commit/3b5cbcf8ae3b907e6b8bb65498a6be7c6736eabc).
-- \[2023.07.13\] Upload ✅ [*training logs on coco*](https://github.com/lyuwenyu/RT-DETR/issues/8).
-- \[2023.05.17\] Release RT-DETR-R18, RT-DETR-R34, RT-DETR-R50-m（example for scaled).
-- \[2023.04.17\] Release RT-DETR-R50, RT-DETR-R101, RT-DETR-L, RT-DETR-X.
+- **Monitoring underwater pollution** through AI-driven detection.
+- **Supporting ocean cleanup initiatives** with accurate classification of waste materials.
+- **Providing researchers with robust detection tools** for marine debris tracking.
 
-## 📍 Implementations
-- 🔥 RT-DETRv2
-  - paddle: [code&weight](./rtdetrv2_paddle/)
-  - pytorch: [code&weight](./rtdetrv2_pytorch/)
-- 🔥 RT-DETR 
-  - paddle: [code&weight](./rtdetr_paddle)
-  - pytorch: [code&weight](./rtdetr_pytorch)
+## Installation
 
+### Using DevContainer
 
-| Model | Input shape | Dataset | $AP^{val}$ | $AP^{val}_{50}$| Params(M) | FLOPs(G) | T4 TensorRT FP16(FPS)
-|:---:|:---:| :---:|:---:|:---:|:---:|:---:|:---:|
-| RT-DETR-R18 | 640 | COCO | 46.5 | 63.8 | 20 | 60 | 217 |
-| RT-DETR-R34 | 640 | COCO | 48.9 | 66.8 | 31 | 92 | 161 |
-| RT-DETR-R50-m | 640 | COCO | 51.3 | 69.6 | 36 | 100 | 145 |
-| RT-DETR-R50 |  640 | COCO | 53.1 | 71.3 | 42 | 136 | 108 |
-| RT-DETR-R101 | 640 | COCO | 54.3 | 72.7 | 76 | 259 | 74 |
-| RT-DETR-HGNetv2-L | 640 | COCO | 53.0 | 71.6 | 32 | 110 | 114 |
-| RT-DETR-HGNetv2-X | 640 | COCO | 54.8 | 73.1 | 67 | 234 | 74 |
-| RT-DETR-R18 | 640 | COCO + Objects365 | **49.2** | **66.6** | 20 | 60 | **217** |
-| RT-DETR-R50 | 640 | COCO + Objects365 | **55.3** | **73.4** | 42 | 136 | **108** |
-| RT-DETR-R101 | 640 | COCO + Objects365 | **56.2** | **74.6** | 76 | 259 | **74** |
-**RT-DETRv2-S** | 640 | COCO  | **48.1** <font color=green>(+1.6)</font> | **65.1** | 20 | 60 | 217 |
-**RT-DETRv2-M**<sup>*<sup> | 640 | COCO  | **49.9** <font color=green>(+1.0)</font> | **67.5** | 31 | 92 | 161 |
-**RT-DETRv2-M** | 640 | COCO | **51.9** <font color=green>(+0.6)</font> | **69.9** | 36 | 100 | 145 |
-**RT-DETRv2-L** | 640 | COCO | **53.4** <font color=green>(+0.3)</font> | **71.6** | 42 | 136 | 108 |
-**RT-DETRv2-X** | 640 | COCO | 54.3 | **72.8** <font color=green>(+0.1)</font>  | 76 | 259| 74 |
+1. Clone the repository and navigate to the project directory.
+  ```bash
+  git clone https://github.com/asferrer/DenSea-RTDETR.git
+  cd RT-DETRv2-DenSea
+  ```
+2. Ensure Docker and Docker Compose are installed on your system.
+3. Build and run the DevContainer:
+  ```bash
+  docker-compose up -d
+  ```
 
-**Notes:**
-- `COCO + Objects365` in the table means finetuned model on COCO using pretrained weights trained on Objects365.
+### Using Conda & Pip
 
+1. Clone the repository:
+  ```bash
+  git clone https://github.com/asferrer/RT-DETRv2-DenSea.git
+  cd RT-DETRv2-DenSea
+  ```
+2. Create a virtual environment with Conda:
+  ```bash
+  conda create -n DenSea python=3.10
+  conda activate DenSea
+  ```
+3. Install dependencies:
+  ```bash
+  pip install --upgrade pip
+  pip install torch torchvision
+  pip install timm
+  ```
 
-## 🦄 Performance
+## Models
 
-### 🏕️ Complex Scenarios
-<div align="center">
-  <img src="https://github.com/lyuwenyu/RT-DETR/assets/77494834/52743892-68c8-4e53-b782-9f89221739e4" width=500 >
-</div>
+Summary of supported models and their performance:
 
-### 🌋 Difficult Conditions
-<div align="center">
-  <img src="https://github.com/lyuwenyu/RT-DETR/assets/77494834/213cf795-6da6-4261-8549-11947292d3cb" width=500 >
-</div>
+| Model | Input Shape | Dataset | AP (mAP@IoU50) | FPS (TensorRT FP16) |
+|---|---|---|---|---|
+| RT-DETRv2-S | 640 | COCO | **48.1** | 217 |
+| RT-DETRv2-M | 640 | COCO | **49.9** | 161 |
+| RT-DETRv2-L | 640 | COCO | **53.4** | 108 |
+| RT-DETRv2-X | 640 | COCO | **54.3** | 74 |
 
-## Citation
-If you use `RT-DETR` or `RTDETRv2` in your work, please use the following BibTeX entries:
+## Training Commands
+
+To train the model on marine debris datasets, use:
+```bash
+python tools/train.py -c /app/RT-DETR/configs/rtdetrv2/rtdetrv2_r18vd_120e_densea_v4.yml -d cuda --seed 21
 ```
-@misc{lv2023detrs,
-      title={DETRs Beat YOLOs on Real-time Object Detection},
-      author={Yian Zhao and Wenyu Lv and Shangliang Xu and Jinman Wei and Guanzhong Wang and Qingqing Dang and Yi Liu and Jie Chen},
-      year={2023},
-      eprint={2304.08069},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
 
-@misc{lv2024rtdetrv2improvedbaselinebagoffreebies,
-      title={RT-DETRv2: Improved Baseline with Bag-of-Freebies for Real-Time Detection Transformer}, 
+## Evaluation Commands
+
+```bash
+python tools/eval.py -c /app/RT-DETR/configs/rtdetrv2/rtdetrv2_r18vd_120e_densea_v4.yml -m /app/RT-DETR/output/rtdetrv2_r50vd_densea_v4/best.pth -o evaluation/rtdetrv2_r50vd_densea_v4 -d cuda
+```
+## Testing Commands
+
+Run inference on images, videos, or live webcam feed:
+```bash
+python demo.py --config-file configs/rtdetr_marine_debris.yaml --input test.jpg --opts MODEL.WEIGHTS models/rtdetrv2_marine_debris.pth
+```
+
+For video input:
+```bash
+python demo.py --config-file configs/rtdetr_marine_debris.yaml --video-input sample_video.mp4 --opts MODEL.WEIGHTS models/rtdetrv2_marine_debris.pth
+```
+
+For real-time webcam detection:
+```bash
+python demo.py --config-file configs/rtdetr_marine_debris.yaml --webcam --opts MODEL.WEIGHTS models/rtdetrv2_marine_debris.pth
+```
+
+## Docker Setup
+
+### Dockerfile
+The project includes a Dockerfile based on `nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04` for easy deployment.
+
+### docker-compose.yml
+The `docker-compose.yml` provides a DevContainer setup with:
+- Volume mounting for project files.
+- Port forwarding for visualization tools.
+- GPU acceleration for deep learning inference.
+
+## Contributing
+
+We welcome contributions! Follow these steps:
+1. Fork the repository.
+2. Create a feature branch.
+3. Commit your changes with meaningful messages.
+4. Open a pull request.
+
+## License
+
+This project is licensed under the **Apache 2.0 License**.
+
+## Citing
+
+If you use `RT-DETRv2` in your research or wish to refer to the results published here, please use the following BibTeX entries.
+
+```BibTeX
+@article{SANCHEZFERRER2023154,
+      title = {An experimental study on marine debris location and recognition using object detection},
+      author = {Alejandro Sánchez-Ferrer and Jose J. Valero-Mas and Antonio Javier Gallego and Jorge Calvo-Zaragoza},
+      journal = {Pattern Recognition Letters},
+      year = {2023},
+      doi = {https://doi.org/10.1016/j.patrec.2022.12.019},
+      url = {https://www.sciencedirect.com/science/article/pii/S0167865522003889},
+}
+```
+```BibTeX
+@InProceedings{10.1007/978-3-031-04881-4_49,
+      title="The CleanSea Set: A Benchmark Corpus for Underwater Debris Detection and Recognition",
+      author="S{\'a}nchez-Ferrer, Alejandro and Gallego, Antonio Javier and Valero-Mas, Jose J. and Calvo-Zaragoza, Jorge",
+      booktitle="Pattern Recognition and Image Analysis",
+      year="2022",
+      publisher="Springer International Publishing",
+}
+```
+```BibTeX
+@misc{lv2024rtdetrv2,
+      title={RT-DETRv2: Improved Baseline with Bag-of-Freebies for Real-Time Detection Transformer},
       author={Wenyu Lv and Yian Zhao and Qinyao Chang and Kui Huang and Guanzhong Wang and Yi Liu},
       year={2024},
       eprint={2407.17140},
       archivePrefix={arXiv},
       primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2407.17140}, 
+      url={https://arxiv.org/abs/2407.17140},
 }
 ```
+
+## Contact
+
+For inquiries and support, contact:
+
+**Project Lead:** Alejandro Sanchez Ferrer  
+**Email:** asanc.tech@gmail.com  
+**GitHub:** [asferrer](https://github.com/asferrer)
