@@ -5,21 +5,13 @@ from pycocotools.coco import COCO
 from tqdm import tqdm
 
 # Parámetros de entrada
-annotation_file = '/app/RT-DETR/dataset/annotations_combined_fixed.json'  # Ruta al archivo JSON de anotaciones
+annotation_file = '/app/RT-DETR/dataset/annotations_cleansea+synthetic_v2.json'  # Ruta al archivo JSON de anotaciones
 # Lista de directorios donde se buscarán las imágenes
 images_dirs = [
     '/app/RT-DETR/dataset/cleansea_dataset/CocoFormatDataset/train_coco/JPEGImages',
-    '/app/RT-DETR/dataset/cleansea_dataset/CocoFormatDataset/test_coco/JPEGImages',
-    '/app/RT-DETR/dataset/Neural_Ocean/train',
-    '/app/RT-DETR/dataset/Neural_Ocean/valid',
-    '/app/RT-DETR/dataset/Neural_Ocean/test',
-    '/app/RT-DETR/dataset/Ocean_garbage/train',
-    '/app/RT-DETR/dataset/Ocean_garbage/valid',
-    '/app/RT-DETR/dataset/Ocean_garbage/test',
-    '/app/RT-DETR/dataset/synthetic_dataset/coco/JPEGImages',
-    # Agrega más directorios si es necesario
+    '/app/RT-DETR/dataset/synthetic_dataset_v2/images',
 ]
-output_dir = 'review_dataset'  # Directorio de salida para guardar las imágenes anotadas
+output_dir = 'review_dataset_synthetic'  # Directorio de salida para guardar las imágenes anotadas
 
 # Crear directorio de salida si no existe
 if not os.path.exists(output_dir):
@@ -28,20 +20,12 @@ if not os.path.exists(output_dir):
 # Cargar anotaciones COCO
 coco = COCO(annotation_file)
 
-# Crear un diccionario para buscar metadata de imágenes por su nombre
+# Crear un diccionario para buscar metadata de imágenes por su nombre (solo el nombre del archivo)
 imagenes_coco = {img['file_name']: img for img in coco.loadImgs(coco.getImgIds())}
 
 # Diccionario para mapear id de categoría a nombre
 categories = coco.loadCats(coco.getCatIds())
 cat_id_to_name = {cat['id']: cat['name'] for cat in categories}
-
-# Función para buscar la ruta de una imagen en los directorios proporcionados
-def buscar_imagen(nombre_archivo):
-    for dir_path in images_dirs:
-        ruta = os.path.join(dir_path, nombre_archivo)
-        if os.path.exists(ruta):
-            return ruta
-    return None
 
 # Función auxiliar para identificar archivos de imagen por su extensión
 def es_imagen(archivo):
@@ -50,61 +34,68 @@ def es_imagen(archivo):
 
 # Procesar cada directorio
 for dir_path in tqdm(images_dirs, desc="Procesando directorios"):
-    # Listar archivos de imagen en el directorio
-    archivos = [os.path.join(dir_path,archivo) for archivo in os.listdir(dir_path) if es_imagen(archivo)]
-    # Seleccionar 5 imágenes aleatoriamente (o todas si hay menos)
-    imagenes_seleccionadas = random.sample(archivos, min(5, len(archivos)))
+    # Diccionario para agrupar imágenes por categoría: {nombre_categoria: [archivo1, archivo2, ...]}
+    imagenes_por_categoria = {}
     
-    for nombre_archivo in imagenes_seleccionadas:
-        # Buscar la imagen usando la función buscar_imagen
-        ruta_imagen = buscar_imagen(nombre_archivo)
-        if ruta_imagen is None:
-            print(f"Advertencia: No se encontró la imagen {nombre_archivo}")
+    # Listar archivos de imagen en el directorio
+    for archivo in os.listdir(dir_path):
+        if not es_imagen(archivo):
             continue
-
-        # Verificar que la imagen esté en el dataset de anotaciones COCO
-        if nombre_archivo not in imagenes_coco:
-            print(f"Advertencia: La imagen {nombre_archivo} no se encuentra en las anotaciones COCO")
+        
+        # Verificar que la imagen exista en las anotaciones COCO
+        if archivo not in imagenes_coco:
+            print(f"Advertencia: La imagen {archivo} no se encuentra en las anotaciones COCO")
             continue
-
-        # Obtener metadata de la imagen y su id
-        meta = imagenes_coco[nombre_archivo]
+        
+        # Obtener metadata y anotaciones de la imagen
+        meta = imagenes_coco[archivo]
         img_id = meta['id']
-
-        # Leer la imagen
-        imagen = cv2.imread(ruta_imagen)
-        if imagen is None:
-            print(f"Advertencia: No se pudo cargar la imagen {ruta_imagen}")
-            continue
-
-        # Obtener todas las anotaciones de la imagen
         ann_ids = coco.getAnnIds(imgIds=[img_id])
         anns = coco.loadAnns(ann_ids)
         if not anns:
-            print(f"Advertencia: La imagen {nombre_archivo} no tiene anotaciones.")
+            print(f"Advertencia: La imagen {archivo} no tiene anotaciones.")
             continue
-
-        # Dibujar las anotaciones (bounding boxes y nombre de la categoría)
-        for ann in anns:
-            x, y, w, h = ann['bbox']
-            pt1 = (int(x), int(y))
-            pt2 = (int(x + w), int(y + h))
-            cv2.rectangle(imagen, pt1, pt2, (0, 255, 0), 2)
-            cat_name = cat_id_to_name.get(ann['category_id'], 'N/A')
-            cv2.putText(imagen, cat_name, (int(x), int(y) - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-        # Obtener el conjunto de categorías presentes en la imagen
+        
+        # Determinar las categorías presentes en la imagen
         categorias_presentes = set()
         for ann in anns:
             cat_name = cat_id_to_name.get(ann['category_id'], 'N/A')
             categorias_presentes.add(cat_name)
-
-        # Guardar la imagen anotada en cada carpeta de la clase correspondiente
+        
+        # Agregar la imagen a cada categoría en la que aparece
         for cat in categorias_presentes:
+            if cat not in imagenes_por_categoria:
+                imagenes_por_categoria[cat] = []
+            if archivo not in imagenes_por_categoria[cat]:
+                imagenes_por_categoria[cat].append(archivo)
+    
+    # Para cada categoría, se seleccionan 5 imágenes aleatorias y se procesan
+    for cat, lista_imagenes in imagenes_por_categoria.items():
+        muestras = random.sample(lista_imagenes, min(5, len(lista_imagenes)))
+        for archivo in muestras:
+            ruta_imagen = os.path.join(dir_path, archivo)
+            imagen = cv2.imread(ruta_imagen)
+            if imagen is None:
+                print(f"Advertencia: No se pudo cargar la imagen {ruta_imagen}")
+                continue
+            
+            # Obtener las anotaciones de la imagen y dibujarlas
+            meta = imagenes_coco[archivo]
+            img_id = meta['id']
+            ann_ids = coco.getAnnIds(imgIds=[img_id])
+            anns = coco.loadAnns(ann_ids)
+            for ann in anns:
+                x, y, w, h = ann['bbox']
+                pt1 = (int(x), int(y))
+                pt2 = (int(x + w), int(y + h))
+                cv2.rectangle(imagen, pt1, pt2, (0, 255, 0), 2)
+                cat_name_ann = cat_id_to_name.get(ann['category_id'], 'N/A')
+                cv2.putText(imagen, cat_name_ann, (int(x), int(y) - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            
+            # Guardar la imagen anotada en la carpeta correspondiente a la categoría
             salida_dir_cat = os.path.join(output_dir, cat)
             if not os.path.exists(salida_dir_cat):
                 os.makedirs(salida_dir_cat)
-            # Se utiliza el nombre base de la imagen para la salida
-            ruta_salida = os.path.join(salida_dir_cat, os.path.basename(nombre_archivo))
+            ruta_salida = os.path.join(salida_dir_cat, archivo)
             cv2.imwrite(ruta_salida, imagen)

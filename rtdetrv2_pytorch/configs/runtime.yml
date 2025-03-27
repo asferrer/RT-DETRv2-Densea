@@ -14,7 +14,7 @@ scaler:
   enabled: True
 
 
-use_ema: False
+use_ema: True
 ema:
   type: ModelEMA
   decay: 0.9999

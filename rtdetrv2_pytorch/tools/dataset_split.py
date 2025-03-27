@@ -57,7 +57,7 @@ def main():
                         help="Fracción de imágenes para el conjunto de test (default: 0.15).")
     parser.add_argument("--val_size", type=float, default=0.15,
                         help="Fracción de imágenes para el conjunto de validación (default: 0.15).")
-    parser.add_argument("--seed", type=int, default=42,
+    parser.add_argument("--seed", type=int, default=21,
                         help="Semilla para aleatorización (default: 42).")
     parser.add_argument("--min_instances", type=int, default=5,
                         help="Número mínimo de instancias (bounding boxes) requeridas por clase para ser considerada (default: 5).")

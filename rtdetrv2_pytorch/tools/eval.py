@@ -49,7 +49,8 @@ def get_label_map(dataset) -> dict:
     try:
         categories = dataset.coco.dataset.get('categories', [])
         for cat in categories:
-            label_map[cat['id']] = cat['name']
+            # Aseguramos que la clave sea un entero
+            label_map[int(cat['id'])] = cat['name']
     except Exception as e:
         print(f"No se pudo obtener el mapeo de etiquetas: {e}")
     return label_map
@@ -57,13 +58,14 @@ def get_label_map(dataset) -> dict:
 def compute_label_offset(pred_labels_tensor: torch.Tensor, label_map: dict) -> int:
     """
     Determina dinámicamente el offset a aplicar a las etiquetas predichas para que sean coherentes
-    con el mapeo de etiquetas.
+    con el mapeo de etiquetas. Si el modelo ya produce etiquetas iniciando en 0, se devuelve 0.
     """
     if pred_labels_tensor.numel() > 0:
-        raw_pred = int(pred_labels_tensor[0].item())
+        # Utilizamos el valor mínimo de las predicciones para comparar
+        raw_pred_min = int(pred_labels_tensor.min().item())
         min_label = min(label_map.keys()) if label_map else 0
-        if raw_pred != min_label:
-            return min_label - raw_pred
+        offset = min_label - raw_pred_min
+        return offset
     return 0
 
 def draw_inferences(image: Image.Image, labels: torch.Tensor, boxes: torch.Tensor, scores: torch.Tensor,
@@ -116,7 +118,7 @@ def draw_ground_truth(image: Image.Image, annotations: list, label_map=None, col
         box = ann["bbox"]
         # Asumir que bbox está en formato [xmin, ymin, xmax, ymax]
         x0, y0, x1, y1 = map(int, box)
-        cat_id = ann["category_id"]
+        cat_id = int(ann["category_id"])
         color = color_map.get(cat_id, "red") if color_map is not None else "red"
         draw.rectangle([x0, y0, x1, y1], outline=color, width=2)
         if label_map is not None:
@@ -188,17 +190,13 @@ def evaluate_on_image(args, cfg, device):
     model = ModelWrapper(cfg).to(device)
     model.eval()
     with torch.no_grad():
-        if device.type == "cuda":
-            with torch.cuda.amp.autocast():
-                outputs = model(im_tensor, orig_size)
-        else:
-            outputs = model(im_tensor, orig_size)
+        outputs = model(im_tensor, orig_size)
         labels, boxes, scores = outputs
 
     label_map = get_label_map(cfg.val_dataloader.dataset)
     color_map = generate_color_map_from_label_map(label_map)
     
-    # Calcular offset dinámico a partir de la primera predicción (si existe)
+    # Con el modelo considerando etiquetas iniciando en 0, el offset debería ser 0
     label_offset = compute_label_offset(labels[0], label_map)
     
     if args.draw:
@@ -274,7 +272,6 @@ def save_debug_comparison(original_image: Image.Image, pred_labels: torch.Tensor
     combined.paste(pred_img, (0,0))
     combined.paste(gt_img, (width,0))
     combined.save(out_path)
-    print(f"Imagen de debug guardada en: {out_path}")
 
 ########################
 # Función para generar la gráfica de distribución de instancias por clase en el dataset de validación
@@ -344,10 +341,10 @@ def evaluate_on_dataset(args, cfg, device):
     os.makedirs(args.base_eval_dir, exist_ok=True)
     plot_val_dataset_distribution(cfg, args)
 
-    # Listas para acumulación global de GT y predicciones (para la matriz de confusión y reporte global)
+    # Listas para acumulación global de detecciones emparejadas (para la matriz de confusión y reporte de clasificación)
     all_y_true = []
     all_y_pred = []
-    # Contadores para falsos positivos (FP) y falsos negativos (FN)
+    # Contadores para falsos positivos (FP) y falsos negativos (FN) por detección
     fp_counter = Counter()
     fn_counter = Counter()
 
@@ -372,11 +369,7 @@ def evaluate_on_dataset(args, cfg, device):
         with torch.no_grad():
             if orig_sizes.dim() == 1:
                 orig_sizes = orig_sizes.unsqueeze(0)
-            if device.type == "cuda":
-                with torch.cuda.amp.autocast():
-                    outputs = model(images, orig_sizes)
-            else:
-                outputs = model(images, orig_sizes)
+            outputs = model(images, orig_sizes)
         labels_batch, boxes_batch, scores_batch = outputs
         
         # Procesamiento de cada imagen en el batch
@@ -390,7 +383,7 @@ def evaluate_on_dataset(args, cfg, device):
                         if "bbox" in ann and "category_id" in ann:
                             gt_annotations.append(ann)
                             gt_boxes.append(ann["bbox"])
-                            gt_labels.append(ann["category_id"])
+                            gt_labels.append(int(ann["category_id"]))
                 elif "boxes" in targets[i] and "labels" in targets[i]:
                     if hasattr(targets[i]["boxes"], "tolist"):
                         gt_boxes = targets[i]["boxes"].tolist()
@@ -412,19 +405,15 @@ def evaluate_on_dataset(args, cfg, device):
             matched, unmatched_gt, unmatched_pred = match_detections_in_image(
                 gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=0.2
             )
-            # Acumular solo los emparejamientos para la matriz de confusión global
+            # Acumular solo los emparejamientos para la matriz de confusión (excluyendo casos de no detección)
             for gt_lab, pred_lab in matched:
                 all_y_true.append(gt_lab)
                 all_y_pred.append(pred_lab)
-            # Para cada GT sin match, se considera un falso negativo
+            # Para cada GT sin match, se considera un falso negativo (se actualiza el contador)
             for gt_lab in unmatched_gt:
-                all_y_true.append(gt_lab)
-                all_y_pred.append(0)  # 0 indica ausencia de detección
                 fn_counter[gt_lab] += 1
             # Para cada predicción sin match, se considera un falso positivo
             for pred_lab in unmatched_pred:
-                all_y_true.append(0)  # 0 indica ausencia de GT
-                all_y_pred.append(pred_lab)
                 fp_counter[pred_lab] += 1
             
             if args.debug and targets is not None and isinstance(targets[i], dict):
@@ -458,9 +447,9 @@ def evaluate_on_dataset(args, cfg, device):
         if device.type == "cuda" and batch_count % 20 == 0:
             torch.cuda.empty_cache()
     
-    # Generar matriz de confusión y reporte global con ajuste dinámico para visualizar todos los valores
-    all_labels = [0] + sorted(label_map.keys())
-    target_names = ["No detección"] + [label_map[k] for k in sorted(label_map.keys())]
+    # Generar matriz de confusión y reporte de clasificación solo con las detecciones emparejadas
+    all_labels = sorted(label_map.keys())
+    target_names = [label_map[k] for k in all_labels]
     cm = confusion_matrix(all_y_true, all_y_pred, labels=all_labels)
     report = classification_report(all_y_true, all_y_pred, labels=all_labels,
                                    target_names=target_names)
@@ -474,7 +463,7 @@ def evaluate_on_dataset(args, cfg, device):
     plt.xticks(rotation=45, ha='right')
     plt.xlabel("Predicción")
     plt.ylabel("Ground Truth")
-    plt.title("Matriz de Confusión")
+    plt.title("Matriz de Confusión (Detecciones emparejadas)")
     cm_path = os.path.join(args.base_eval_dir, "confusion_matrix.png")
     plt.tight_layout()
     plt.savefig(cm_path)
@@ -484,15 +473,15 @@ def evaluate_on_dataset(args, cfg, device):
     plt.figure(figsize=(8, 8))
     plt.text(0.01, 0.05, report, {'fontsize': 10}, fontproperties='monospace')
     plt.axis('off')
-    plt.title("Reporte de Clasificación")
+    plt.title("Reporte de Clasificación (Detecciones emparejadas)")
     report_path = os.path.join(args.base_eval_dir, "classification_report.png")
     plt.tight_layout()
     plt.savefig(report_path)
     plt.close()
     print(f"\nReporte de Clasificación guardado en: {report_path}")
     
-    # Generar reporte de Falsos Positivos y Falsos Negativos
-    fp_fn_report = "Reporte de Falsos Positivos y Falsos Negativos\n"
+    # Generar reporte y gráfica separada para falsos positivos y falsos negativos (casos de no detección)
+    fp_fn_report = "Reporte de Falsos Positivos y Falsos Negativos (No Detecciones)\n"
     fp_fn_report += "Categoría\tFalsos Positivos\tFalsos Negativos\n"
     for cat_id in sorted(label_map.keys()):
         cat_name = label_map[cat_id]
@@ -504,6 +493,27 @@ def evaluate_on_dataset(args, cfg, device):
     with open(fp_fn_report_path, "w") as f:
         f.write(fp_fn_report)
     print(f"\nReporte de Falsos Positivos y Falsos Negativos guardado en: {fp_fn_report_path}")
+    
+    # Graficar los contadores de FP y FN por clase
+    classes = [label_map[k] for k in sorted(label_map.keys())]
+    fp_counts = [fp_counter.get(k, 0) for k in sorted(label_map.keys())]
+    fn_counts = [fn_counter.get(k, 0) for k in sorted(label_map.keys())]
+    
+    x = np.arange(len(classes))
+    width = 0.35
+    plt.figure(figsize=(12, 6))
+    plt.bar(x - width/2, fp_counts, width, label='Falsos Positivos', color='salmon')
+    plt.bar(x + width/2, fn_counts, width, label='Falsos Negativos', color='lightblue')
+    plt.xticks(x, classes, rotation=45, ha='right')
+    plt.xlabel("Clases")
+    plt.ylabel("Cantidad")
+    plt.title("Falsos Positivos y Falsos Negativos por Clase (No Detecciones)")
+    plt.legend()
+    fp_fn_bar_path = os.path.join(args.base_eval_dir, "fp_fn_bar_chart.png")
+    plt.tight_layout()
+    plt.savefig(fp_fn_bar_path)
+    plt.close()
+    print(f"\nGráfica de FP y FN guardada en: {fp_fn_bar_path}")
 
 ########################
 # Función principal

@@ -43,16 +43,31 @@ def get_label_map(dataset) -> dict:
     try:
         categories = dataset.coco.dataset.get('categories', [])
         for cat in categories:
-            label_map[cat['id']] = cat['name']
+            # Convertir la clave a entero para asegurar consistencia
+            label_map[int(cat['id'])] = cat['name']
     except Exception as e:
         print(f"No se pudo obtener el mapeo de etiquetas: {e}")
     return label_map
 
+def compute_label_offset(pred_labels_tensor: torch.Tensor, label_map: dict) -> int:
+    """
+    Determina dinámicamente el offset a aplicar a las etiquetas predichas para que sean coherentes
+    con el mapeo de etiquetas. Si el modelo ya produce etiquetas iniciando en 0, se devuelve 0.
+    """
+    if pred_labels_tensor.numel() > 0:
+        raw_pred_min = int(pred_labels_tensor.min().item())
+        min_label = min(label_map.keys()) if label_map else 0
+        offset = min_label - raw_pred_min
+        return offset
+    return 0
+
 def draw_inferences_pil(image: Image.Image, labels: torch.Tensor, boxes: torch.Tensor, scores: torch.Tensor,
-                         label_map=None, color_map=None, threshold: float = 0.5, radius: int = 2):
+                         label_map=None, color_map=None, threshold: float = 0.5, 
+                         label_offset: int = 0, radius: int = 2):
     """
     Dibuja las inferencias sobre una imagen PIL de forma minimalista. 
     Si no se detecta nada (todos los scores ≤ threshold), se devuelve la imagen original.
+    Se utiliza el parámetro 'label_offset' para ajustar las etiquetas en caso necesario.
     """
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
@@ -68,7 +83,8 @@ def draw_inferences_pil(image: Image.Image, labels: torch.Tensor, boxes: torch.T
     padding = 2
     for j, box in enumerate(valid_boxes):
         x0, y0, x1, y1 = map(int, box)
-        pred_id = valid_labels[j].item() + 1  # Se suma 1 si el modelo devuelve índices 0-indexados
+        # Se aplica el offset; dado que el modelo produce índices 0-indexados, no se suma 1
+        pred_id = valid_labels[j].item() + label_offset
         color = color_map.get(pred_id, "black") if color_map is not None else "black"
         draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=color, width=1)
         if label_map is not None:
@@ -120,20 +136,20 @@ class ModelWrapper(nn.Module):
 def inference_on_frame(frame: np.ndarray, model, transform, device, label_map, color_map, threshold=0.5):
     """
     Realiza inferencia sobre un frame. Se convierte el frame a PIL, se aplica el transform para inferencia,
-    y se dibujan las detecciones sobre la imagen PIL (usando orig_size del frame original).
+    se calcula el offset (aunque en este caso será 0, ya que el modelo produce etiquetas iniciando en 0)
+    y se dibujan las detecciones sobre la imagen PIL.
     Se devuelve el frame anotado en el mismo tamaño original.
     """
     pil_img = cv2_to_pil(frame)
-    # El transform puede incluir un resize para cumplir con el input del modelo.
     input_tensor = transform(pil_img).unsqueeze(0).to(device)
-    # Se utiliza el tamaño original para reescalar las cajas.
     orig_size = torch.tensor([pil_img.width, pil_img.height])[None].to(device)
     with torch.no_grad():
         labels, boxes, scores = model(input_tensor, orig_size)
-    # Dibujar sobre la imagen original
+    # Calcular offset (debería ser 0 si el modelo ya produce índices 0-indexados)
+    label_offset = compute_label_offset(labels[0].cpu(), label_map)
     annotated_pil = draw_inferences_pil(pil_img, labels[0], boxes[0], scores[0],
-                                         label_map=label_map, color_map=color_map, threshold=threshold)
-    # Asegurarse de que la imagen anotada tenga el mismo tamaño original
+                                         label_map=label_map, color_map=color_map, threshold=threshold,
+                                         label_offset=label_offset)
     annotated_pil = annotated_pil.resize((pil_img.width, pil_img.height))
     annotated_frame = pil_to_cv2(annotated_pil)
     return annotated_frame
@@ -193,17 +209,16 @@ def main():
         state = checkpoint['ema']['module']
     else:
         state = checkpoint['model']
-    # Cargar el modelo de configuración (por ejemplo, cfg.model) y también instanciar ModelWrapper
     model_instance = cfg.model
     model_instance.load_state_dict(state)
     model = ModelWrapper(cfg).to(device)
     model.eval()
     
-    # Obtener label map y color map
+    # Obtener label map y color map (asegurando que las claves sean enteros)
     label_map = get_label_map(cfg.val_dataloader.dataset)
     color_map = generate_color_map_from_label_map(label_map)
     
-    # Definir transformación de entrada (para cumplir con el input del modelo)
+    # Definir transformación de entrada para cumplir con el input del modelo
     transform = T.Compose([
         T.Resize((640, 640)),
         T.ToTensor(),
@@ -220,8 +235,11 @@ def main():
         orig_size = torch.tensor([pil_img.width, pil_img.height])[None].to(device)
         with torch.no_grad():
             labels, boxes, scores = model(input_tensor, orig_size)
+        # Calcular offset (debería ser 0)
+        label_offset = compute_label_offset(labels[0].cpu(), label_map)
         annotated_img = draw_inferences_pil(pil_img, labels[0], boxes[0], scores[0],
-                                             label_map=label_map, color_map=color_map, threshold=args.threshold)
+                                             label_map=label_map, color_map=color_map, threshold=args.threshold,
+                                             label_offset=label_offset)
         out_filename = f"{input_basename}_{config_name}.jpg"
         out_path = os.path.join(args.save_dir, out_filename)
         annotated_img.save(out_path)
@@ -238,18 +256,13 @@ def main():
         if not cap.isOpened():
             print("Error: no se pudo abrir la fuente de video/cámara.")
             return
-        # Obtener tamaño original del video
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps == 0:
             fps = 25
-        if mode == "video":
-            out_filename = f"{input_basename}_{config_name}.mp4"
-        else:
-            out_filename = f"camera_{config_name}.mp4"
+        out_filename = f"{input_basename}_{config_name}.mp4" if mode == "video" else f"camera_{config_name}.mp4"
         out_path = os.path.join(args.save_dir, out_filename)
-        # Configurar VideoWriter con el tamaño original
         out_writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
         
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if mode == "video" else None
@@ -259,9 +272,7 @@ def main():
             ret, frame = cap.read()
             if not ret:
                 break
-            # Realizar inferencia y obtener el frame anotado
             annotated_frame = inference_on_frame(frame, model, transform, device, label_map, color_map, threshold=args.threshold)
-            # Forzar el tamaño a (width, height) para coincidir con VideoWriter
             annotated_frame = cv2.resize(annotated_frame, (width, height))
             out_writer.write(annotated_frame)
             pbar.update(1)

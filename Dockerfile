@@ -32,7 +32,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         pycocotools \
         PyYAML \
         tensorboard \
-        tqdm
+        tqdm \
+        iterative-stratification
 
 # Establecer el directorio de trabajo
 WORKDIR /app/RT-DETR
