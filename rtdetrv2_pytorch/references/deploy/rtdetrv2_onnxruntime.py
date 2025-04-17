@@ -8,7 +8,6 @@ import numpy as np
 import onnxruntime as ort 
 from PIL import Image, ImageDraw
 
-
 def draw(images, labels, boxes, scores, thrh = 0.6):
     for i, im in enumerate(images):
         draw = ImageDraw.Draw(im)
@@ -27,8 +26,10 @@ def draw(images, labels, boxes, scores, thrh = 0.6):
 def main(args, ):
     """main
     """
-    sess = ort.InferenceSession(args.onnx_file)
+    providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+    sess = ort.InferenceSession(args.onnx_file, providers=providers)
     print(ort.get_device())
+    print("Execution Providers utilizados:", sess.get_providers())
 
     im_pil = Image.open(args.im_file).convert('RGB')
     w, h = im_pil.size
