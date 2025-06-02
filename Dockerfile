@@ -33,7 +33,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
         PyYAML \
         tensorboard \
         tqdm \
-        iterative-stratification
+        iterative-stratification \
+        onnxruntime-gpu \
+        onnx \
+        onnx-simplifier
+
 
 # Establecer el directorio de trabajo
 WORKDIR /app/RT-DETR

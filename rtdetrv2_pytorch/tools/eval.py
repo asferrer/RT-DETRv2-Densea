@@ -116,7 +116,7 @@ def draw_ground_truth(image: Image.Image, annotations: list, label_map=None, col
         if "bbox" not in ann or "category_id" not in ann:
             continue
         box = ann["bbox"]
-        # Asumir que bbox está en formato [xmin, ymin, xmax, ymax]
+        # Se asume que bbox está en formato [xmin, ymin, xmax, ymax]
         x0, y0, x1, y1 = map(int, box)
         cat_id = int(ann["category_id"])
         color = color_map.get(cat_id, "red") if color_map is not None else "red"
@@ -344,6 +344,7 @@ def evaluate_on_dataset(args, cfg, device):
     # Listas para acumulación global de detecciones emparejadas (para la matriz de confusión y reporte de clasificación)
     all_y_true = []
     all_y_pred = []
+
     # Contadores para falsos positivos (FP) y falsos negativos (FN) por detección
     fp_counter = Counter()
     fn_counter = Counter()
@@ -394,27 +395,43 @@ def evaluate_on_dataset(args, cfg, device):
                     else:
                         gt_labels = targets[i]["labels"]
                     gt_annotations = [{"bbox": box, "category_id": lab} for box, lab in zip(gt_boxes, gt_labels)]
+            
             # Calcular el offset dinámico para las predicciones de esta imagen
             raw_pred_labels = [int(x.item()) for x in labels_batch[i].cpu()]
             label_offset = compute_label_offset(labels_batch[i].cpu(), label_map) if len(raw_pred_labels) > 0 else 0
             pred_boxes = boxes_batch[i].cpu().tolist()
             pred_labels = [p + label_offset for p in raw_pred_labels]
             pred_scores = scores_batch[i].cpu().tolist()
+            
+            # Filtrar las predicciones según el umbral para evitar contar detecciones con baja confianza
+            filtered_indices = [j for j, s in enumerate(pred_scores) if s > args.detection_threshold]
+            pred_boxes = [pred_boxes[j] for j in filtered_indices]
+            pred_labels = [pred_labels[j] for j in filtered_indices]
+            pred_scores = [pred_scores[j] for j in filtered_indices]
+            
             if len(gt_boxes) == 0 and len(pred_boxes) == 0:
                 continue
+
             matched, unmatched_gt, unmatched_pred = match_detections_in_image(
-                gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=0.2
+                gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=args.iou_threshold
             )
+
             # Acumular solo los emparejamientos para la matriz de confusión (excluyendo casos de no detección)
             for gt_lab, pred_lab in matched:
                 all_y_true.append(gt_lab)
                 all_y_pred.append(pred_lab)
+            
             # Para cada GT sin match, se considera un falso negativo (se actualiza el contador)
             for gt_lab in unmatched_gt:
                 fn_counter[gt_lab] += 1
+                all_y_true.append(gt_lab)
+                all_y_pred.append(-1)
+            
             # Para cada predicción sin match, se considera un falso positivo
             for pred_lab in unmatched_pred:
                 fp_counter[pred_lab] += 1
+                all_y_true.append(-1)
+                all_y_pred.append(pred_lab)
             
             if args.debug and targets is not None and isinstance(targets[i], dict):
                 if "annotations" in targets[i]:
@@ -426,12 +443,12 @@ def evaluate_on_dataset(args, cfg, device):
                         num_gt = len(targets[i]["boxes"])
                 else:
                     num_gt = 0
-                num_pred = sum(scores_batch[i].cpu() > 0.5)
+                num_pred = sum(scores_batch[i].cpu() > args.detection_threshold)
                 if num_pred != num_gt:
                     pil_img = T.ToPILImage()(images[i].cpu())
                     debug_out = os.path.join(args.base_eval_dir, f"debug_batch{idx}_img{i}.jpg")
                     save_debug_comparison(pil_img, labels_batch[i], boxes_batch[i], scores_batch[i],
-                                          gt_annotations, label_map, color_map, 0.5, label_offset, debug_out)
+                                          gt_annotations, label_map, color_map, args.detection_threshold, label_offset, debug_out)
         # Si se desea guardar imágenes con inferencias
         if args.draw:
             for i in range(images.shape[0]):
@@ -447,13 +464,12 @@ def evaluate_on_dataset(args, cfg, device):
         if device.type == "cuda" and batch_count % 20 == 0:
             torch.cuda.empty_cache()
     
-    # Generar matriz de confusión y reporte de clasificación solo con las detecciones emparejadas
-    all_labels = sorted(label_map.keys())
-    target_names = [label_map[k] for k in all_labels]
+    all_labels = [-1] + sorted(label_map.keys())
+    target_names = ["No Detection"] + [label_map[k] for k in sorted(label_map.keys())]
     cm = confusion_matrix(all_y_true, all_y_pred, labels=all_labels)
     report = classification_report(all_y_true, all_y_pred, labels=all_labels,
                                    target_names=target_names)
-
+                                   
     num_classes = len(target_names)
     fig_size = max(8, 0.5 * num_classes)
     plt.figure(figsize=(fig_size, fig_size))
@@ -463,13 +479,13 @@ def evaluate_on_dataset(args, cfg, device):
     plt.xticks(rotation=45, ha='right')
     plt.xlabel("Predicción")
     plt.ylabel("Ground Truth")
-    plt.title("Matriz de Confusión (Detecciones emparejadas)")
+    plt.title("Matriz de Confusión")
     cm_path = os.path.join(args.base_eval_dir, "confusion_matrix.png")
     plt.tight_layout()
     plt.savefig(cm_path)
     plt.close()
     print(f"\nMatriz de Confusión guardada en: {cm_path}")
-    
+
     plt.figure(figsize=(8, 8))
     plt.text(0.01, 0.05, report, {'fontsize': 10}, fontproperties='monospace')
     plt.axis('off')
@@ -527,8 +543,12 @@ def main():
                         help="Ruta al archivo de configuración YAML.")
     parser.add_argument('-r', '--resume', type=str, required=True,
                         help="Ruta al checkpoint del modelo.")
-    parser.add_argument('-d', '--device', type=str, default='cpu',
+    parser.add_argument('-d', '--device', type=str, default='cuda',
                         help="Dispositivo de cómputo (e.g., cpu o cuda).")
+    parser.add_argument('-dt', '--detection_threshold', type=float, default=0.5,
+                        help="Threshold de detección como true positive")
+    parser.add_argument('-iout', '--iou_threshold', type=float, default=0.5,
+                        help="Threshold de IoU para asignación de predicción")
     parser.add_argument('--im_file', type=str, default=None,
                         help="Ruta a una imagen individual para inferencia (modo imagen única).")
     parser.add_argument('--draw', action='store_true',

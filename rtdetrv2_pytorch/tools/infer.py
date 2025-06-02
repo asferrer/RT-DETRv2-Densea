@@ -161,7 +161,7 @@ def inference_on_frame(frame: np.ndarray, model, transform, device, label_map, c
 def auto_detect_mode(input_source: str) -> str:
     image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
     video_exts = ['.mp4', '.avi', '.mkv', '.mov']
-    if os.path.exists(input_source):
+    try:
         ext = os.path.splitext(input_source)[1].lower()
         if ext in image_exts:
             return "image"
@@ -169,7 +169,7 @@ def auto_detect_mode(input_source: str) -> str:
             return "video"
         else:
             return "image"
-    else:
+    except:
         try:
             int(input_source)
             return "camera"
@@ -189,7 +189,7 @@ def main():
     )
     parser.add_argument('-c', '--config', type=str, required=True, help="Ruta al archivo YAML de configuración.")
     parser.add_argument('-r', '--resume', type=str, required=True, help="Ruta al checkpoint del modelo.")
-    parser.add_argument('-d', '--device', type=str, default='cpu', help="Dispositivo: cpu o cuda.")
+    parser.add_argument('-d', '--device', type=str, default='cuda', help="Dispositivo: cpu o cuda.")
     parser.add_argument('-i', '--input', type=str, required=True,
                         help="Ruta al archivo de imagen/video o índice/URL para cámara (RTSP/webcam).")
     parser.add_argument('--save_dir', type=str, default='inference_results',
