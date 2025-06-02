@@ -7,7 +7,7 @@
 <a href="https://arxiv.org/abs/2407.17140">
     <img alt="arXiv" src="https://img.shields.io/badge/arXiv-2407.17140-red">
 </a>
-<a href="mailto:your.email@example.com">
+<a href="mailto:asanc.tech@gmail.com">
     <img alt="email" src="https://img.shields.io/badge/contact_me-email-yellow">
 </a>
 
