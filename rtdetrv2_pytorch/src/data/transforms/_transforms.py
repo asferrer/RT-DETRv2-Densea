@@ -33,7 +33,8 @@ Resize = register()(T.Resize)
 SanitizeBoundingBoxes = register(name='SanitizeBoundingBoxes')(SanitizeBoundingBoxes)
 RandomCrop = register()(T.RandomCrop)
 Normalize = register()(T.Normalize)
-
+ToImage = register()(T.ToImage)
+ToDtype = register()(T.ToDtype)
 
 @register()
 class EmptyTransform(T.Transform):

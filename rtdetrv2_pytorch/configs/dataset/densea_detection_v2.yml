@@ -19,7 +19,7 @@ train_dataloader:
       - ./dataset/Ocean_garbage/valid/
       - ./dataset/Neural_Ocean/train/
       - ./dataset/Neural_Ocean/valid/
-    ann_file: ./dataset/annotations_combined_fixed.json  # Reemplazado anno_path por ann_file
+      - ./dataset/synthetic_dataset_v2/
     return_masks: False
     remap_mscoco_category: False
     transforms:
@@ -41,7 +41,6 @@ val_dataloader:
       - ./dataset/cleansea_dataset/test/
       - ./dataset/Ocean_garbage/test/
       - ./dataset/Neural_Ocean/test/
-    ann_file: ./dataset/annotations_combined_fixed.json  # Reemplazado anno_path por ann_file
     return_masks: False
     remap_mscoco_category: False
     transforms:

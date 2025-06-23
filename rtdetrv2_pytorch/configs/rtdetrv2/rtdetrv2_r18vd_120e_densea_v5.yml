@@ -9,15 +9,15 @@ __include__: [
 #####################################################
 # Directorio de salida (donde se guardan pesos, logs)
 #####################################################
-output_dir: ./output/rtdetrv2_r50vd_densea_v5
+output_dir: ./output/rtdetrv2_r18vd_densea_v5
 
 #####################################################
 # Configuración del modelo
 #####################################################
 PResNet:
   depth: 18
-  freeze_at: 0
-  freeze_norm: True
+  freeze_at: -1
+  freeze_norm: False
   pretrained: True
 
 HybridEncoder:
@@ -26,16 +26,16 @@ HybridEncoder:
   expansion: 0.5
 
 RTDETRTransformerv2:
-  num_layers: 4  # Más capacidad para manejar dataset de fondo marino
-  num_queries: 300  # Aumenta el número de queries para detectar múltiples residuos
+  num_layers: 3  # Más capacidad para manejar dataset de fondo marino
+  num_queries: 200  # Aumenta el número de queries para detectar múltiples residuos
   num_denoising: 100  # Denoising más robusto para estabilizar el entrenamiento
   label_noise_ratio: 0.3
-  box_noise_scale: 0.9
+  box_noise_scale: 0.7
   num_points: [4, 4, 4]
   cross_attn_method: default
   query_select_method: default
 
-epoches: 200
+epoches: 120
 
 #####################################################
 # Configuración del optimizador
@@ -45,7 +45,7 @@ optimizer:
   params:
     - 
       params: '^(?=.*backbone)(?!.*norm).*$'
-      lr: 0.00005  # Aprendizaje reducido para el backbone preentrenado
+      lr: 0.0001  # Aprendizaje reducido para el backbone preentrenado
     - 
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
       weight_decay: 0.0
@@ -86,7 +86,7 @@ train_dataloader:
         - "/app/RT-DETR/dataset/Ocean_garbage/valid"
         - "/app/RT-DETR/dataset/Neural_Ocean/train"
         - "/app/RT-DETR/dataset/Neural_Ocean/valid"
-    anno_path: "/app/RT-DETR/dataset/annotations_combined_fixed.json"
+    anno_path: "/app/RT-DETR/split_v5/train.json"
     transforms:
       ops:
         - {type: RandomPhotometricDistort, p: 0.5}  # Ajustado para condiciones de fondo marino
@@ -111,8 +111,8 @@ train_dataloader:
     stop_epoch: 150  # Ajustado para reducir el multiscale en la última parte
 
   shuffle: True
-  total_batch_size: 16  # Ajustado para RTX 4080 con AMP
-  num_workers: 4  # Aumentado para aprovechar el i9
+  total_batch_size: 8  # Ajustado para RTX 4080 con AMP
+  num_workers: 2  # Aumentado para aprovechar el i9
 
 val_dataloader:
   dataset:
@@ -121,11 +121,11 @@ val_dataloader:
         - "/app/RT-DETR/dataset/cleansea_dataset/CocoFormatDataset/test_coco/JPEGImages"
         - "/app/RT-DETR/dataset/Ocean_garbage/test"
         - "/app/RT-DETR/dataset/Neural_Ocean/test"
-    anno_path: "/app/RT-DETR/dataset/annotations_combined_fixed.json"
+    anno_path: "/app/RT-DETR/split_v5/val.json"
     transforms:
       ops:
         - {type: Resize, size: [640, 640]}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
-  total_batch_size: 16
-  num_workers: 4
+  total_batch_size: 8
+  num_workers: 2

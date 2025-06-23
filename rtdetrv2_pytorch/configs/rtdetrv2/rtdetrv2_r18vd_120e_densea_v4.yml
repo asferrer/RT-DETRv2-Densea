@@ -1,5 +1,5 @@
 __include__: [
-  '../dataset/densea_detection_v2.yml',
+  '../dataset/densea_detection.yml',
   '../runtime.yml',
   './include/dataloader.yml',
   './include/optimizer_v2.yml',
@@ -35,7 +35,7 @@ RTDETRTransformerv2:
   cross_attn_method: default
   query_select_method: default
 
-epoches: 200
+epoches: 120
 
 #####################################################
 # Configuración del optimizador

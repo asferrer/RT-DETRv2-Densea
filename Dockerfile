@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel
 
 # Establecer variables de entorno para evitar interacciones durante la instalación
 ENV DEBIAN_FRONTEND=noninteractive
@@ -22,7 +22,7 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 # Actualizar 'pip' y instalar paquetes de Python necesarios en una sola capa
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-        torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+        torch torchvision --index-url https://download.pytorch.org/whl/cu128 && \
     pip install --no-cache-dir \
         opencv-python \
         seaborn \

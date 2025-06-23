@@ -6,7 +6,10 @@ de clasificación y reporte de falsos positivos y falsos negativos). Además, si
 y las detecciones difieren de la ground truth, se genera una imagen comparativa (izquierda: predicción; 
 derecha: ground truth).
 
-Se aplican optimizaciones de eficiencia: uso de AMP, half precision y liberación periódica de caché.
+Versión actualizada:
+- Añadida la capacidad de generar un archivo de predicciones en formato COCO (`coco_predictions.json`).
+- Añadida la evaluación de métricas estándar COCO (mAP) usando `pycocotools` si está instalado.
+- Se activa con el flag --coco_eval.
 """
 
 import os
@@ -20,10 +23,20 @@ from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 import colorsys
 import numpy as np
+import json
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
+
+# Bloque para la importación y evaluación COCO
+try:
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+    COCO_TOOLS_AVAILABLE = True
+except ImportError:
+    COCO_TOOLS_AVAILABLE = False
+
 
 # Agregar directorio padre para importar YAMLConfig y otros módulos internos
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -315,7 +328,7 @@ def plot_val_dataset_distribution(cfg, args):
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2.0,
-            height + 0.01 * max(counts),
+            height + 0.01 * max(counts) if counts else 0,
             str(height),
             ha='center',
             va='bottom',
@@ -329,6 +342,45 @@ def plot_val_dataset_distribution(cfg, args):
     print(f"Distribución de instancias por clase guardada en: {dist_path}")
 
 ########################
+# Función para evaluación COCO
+########################
+def run_coco_evaluation(coco_gt, coco_pred_json_path, output_dir):
+    """
+    Ejecuta la evaluación estándar de COCO (mAP) usando pycocotools.
+    """
+    if not COCO_TOOLS_AVAILABLE:
+        print("\n--- Evaluación COCO Omitida ---")
+        print("La librería `pycocotools` no está instalada.")
+        print("Para calcular el mAP, instálala con: pip install pycocotools")
+        print(f"El archivo de predicciones ha sido guardado en: {coco_pred_json_path}")
+        return
+
+    print("\n--- Iniciando Evaluación Estándar COCO (mAP) ---")
+    
+    if 'info' not in coco_gt.dataset:
+        coco_gt.dataset['info'] = []
+
+    coco_dt = coco_gt.loadRes(coco_pred_json_path)
+
+    # Inicializar COCOeval
+    coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
+
+    # Ejecutar evaluación
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+
+    # Guardar resultados en un archivo de texto
+    report_path = os.path.join(output_dir, "coco_evaluation_report.txt")
+    original_stdout = sys.stdout
+    with open(report_path, 'w') as f:
+        sys.stdout = f
+        coco_eval.summarize()
+    sys.stdout = original_stdout  # Restaurar stdout
+    print(f"Reporte de evaluación COCO guardado en: {report_path}")
+    print("--------------------------------------------------")
+
+########################
 # Función de evaluación integrada (una sola pasada)
 ########################
 
@@ -336,7 +388,8 @@ def evaluate_on_dataset(args, cfg, device):
     model = ModelWrapper(cfg).to(device)
     model.eval()
     dataloader = cfg.val_dataloader
-    label_map = get_label_map(cfg.val_dataloader.dataset)
+    dataset = dataloader.dataset
+    label_map = get_label_map(dataset)
     color_map = generate_color_map_from_label_map(label_map)
     os.makedirs(args.base_eval_dir, exist_ok=True)
     plot_val_dataset_distribution(cfg, args)
@@ -348,6 +401,9 @@ def evaluate_on_dataset(args, cfg, device):
     # Contadores para falsos positivos (FP) y falsos negativos (FN) por detección
     fp_counter = Counter()
     fn_counter = Counter()
+    
+    # Lista para guardar predicciones en formato COCO
+    coco_predictions = []
 
     batch_count = 0
 
@@ -374,11 +430,17 @@ def evaluate_on_dataset(args, cfg, device):
         labels_batch, boxes_batch, scores_batch = outputs
         
         # Procesamiento de cada imagen en el batch
-        for i in range(B):
+        for i in range(len(images)):
             gt_boxes = []
             gt_labels = []
             gt_annotations = []
+            image_id = None
+            
             if targets is not None and isinstance(targets[i], dict):
+                # Extraer image_id para la evaluación COCO
+                if 'image_id' in targets[i]:
+                    image_id = targets[i]['image_id'].item()
+                
                 if "annotations" in targets[i]:
                     for ann in targets[i]["annotations"]:
                         if "bbox" in ann and "category_id" in ann:
@@ -397,23 +459,44 @@ def evaluate_on_dataset(args, cfg, device):
                     gt_annotations = [{"bbox": box, "category_id": lab} for box, lab in zip(gt_boxes, gt_labels)]
             
             # Calcular el offset dinámico para las predicciones de esta imagen
-            raw_pred_labels = [int(x.item()) for x in labels_batch[i].cpu()]
-            label_offset = compute_label_offset(labels_batch[i].cpu(), label_map) if len(raw_pred_labels) > 0 else 0
-            pred_boxes = boxes_batch[i].cpu().tolist()
-            pred_labels = [p + label_offset for p in raw_pred_labels]
-            pred_scores = scores_batch[i].cpu().tolist()
+            raw_pred_labels_tensor = labels_batch[i].cpu()
+            label_offset = compute_label_offset(raw_pred_labels_tensor, label_map)
             
-            # Filtrar las predicciones según el umbral para evitar contar detecciones con baja confianza
-            filtered_indices = [j for j, s in enumerate(pred_scores) if s > args.detection_threshold]
-            pred_boxes = [pred_boxes[j] for j in filtered_indices]
-            pred_labels = [pred_labels[j] for j in filtered_indices]
-            pred_scores = [pred_scores[j] for j in filtered_indices]
+            pred_boxes = boxes_batch[i].cpu()
+            pred_scores = scores_batch[i].cpu()
+
+            # Acumulación de resultados para COCO eval
+            if args.coco_eval and image_id is not None:
+                for j in range(len(raw_pred_labels_tensor)):
+                    box = pred_boxes[j].tolist()
+                    x1, y1, x2, y2 = box
+                    coco_box = [x1, y1, x2 - x1, y2 - y1] # Convertir a [x, y, w, h]
+                    
+                    pred_cat_id = raw_pred_labels_tensor[j].item() + label_offset
+                    
+                    coco_predictions.append({
+                        'image_id': image_id,
+                        'category_id': pred_cat_id,
+                        'bbox': coco_box,
+                        'score': pred_scores[j].item()
+                    })
+
+            raw_pred_labels = [int(x.item()) for x in raw_pred_labels_tensor]
+            pred_labels_offset = [p + label_offset for p in raw_pred_labels]
+            pred_boxes_list = pred_boxes.tolist()
+            pred_scores_list = pred_scores.tolist()
+
+            # Filtrar las predicciones según el umbral para las métricas personalizadas
+            filtered_indices = [j for j, s in enumerate(pred_scores_list) if s > args.detection_threshold]
+            filtered_pred_boxes = [pred_boxes_list[j] for j in filtered_indices]
+            filtered_pred_labels = [pred_labels_offset[j] for j in filtered_indices]
+            filtered_pred_scores = [pred_scores_list[j] for j in filtered_indices]
             
-            if len(gt_boxes) == 0 and len(pred_boxes) == 0:
+            if len(gt_boxes) == 0 and len(filtered_pred_boxes) == 0:
                 continue
 
             matched, unmatched_gt, unmatched_pred = match_detections_in_image(
-                gt_boxes, gt_labels, pred_boxes, pred_labels, pred_scores, iou_thresh=args.iou_threshold
+                gt_boxes, gt_labels, filtered_pred_boxes, filtered_pred_labels, filtered_pred_scores, iou_thresh=args.iou_threshold
             )
 
             # Acumular solo los emparejamientos para la matriz de confusión (excluyendo casos de no detección)
@@ -434,69 +517,65 @@ def evaluate_on_dataset(args, cfg, device):
                 all_y_pred.append(pred_lab)
             
             if args.debug and targets is not None and isinstance(targets[i], dict):
-                if "annotations" in targets[i]:
-                    num_gt = len(targets[i]["annotations"])
-                elif "boxes" in targets[i]:
-                    if hasattr(targets[i]["boxes"], "tolist"):
-                        num_gt = len(targets[i]["boxes"].tolist())
-                    else:
-                        num_gt = len(targets[i]["boxes"])
-                else:
-                    num_gt = 0
-                num_pred = sum(scores_batch[i].cpu() > args.detection_threshold)
-                if num_pred != num_gt:
+                num_pred = sum(s > args.detection_threshold for s in pred_scores_list)
+                if len(gt_annotations) != num_pred:
                     pil_img = T.ToPILImage()(images[i].cpu())
                     debug_out = os.path.join(args.base_eval_dir, f"debug_batch{idx}_img{i}.jpg")
-                    save_debug_comparison(pil_img, labels_batch[i], boxes_batch[i], scores_batch[i],
+                    save_debug_comparison(pil_img, raw_pred_labels_tensor, pred_boxes, pred_scores,
                                           gt_annotations, label_map, color_map, args.detection_threshold, label_offset, debug_out)
         # Si se desea guardar imágenes con inferencias
         if args.draw:
             for i in range(images.shape[0]):
                 out_fname = os.path.join(args.base_eval_dir, "predicted_images", f"result_batch_{idx}_{i}.jpg")
                 im = T.ToPILImage()(images[i].cpu())
-                # Recalcular offset para esta imagen (por si hay diferencias)
-                raw_pred_labels = [int(x.item()) for x in labels_batch[i].cpu()]
-                label_offset = compute_label_offset(labels_batch[i].cpu(), label_map) if len(raw_pred_labels) > 0 else 0
-                draw_inferences(im, labels_batch[i], boxes_batch[i], scores_batch[i],
+                raw_pred_labels_tensor = labels_batch[i].cpu()
+                label_offset = compute_label_offset(raw_pred_labels_tensor, label_map)
+                draw_inferences(im, raw_pred_labels_tensor, boxes_batch[i].cpu(), scores_batch[i].cpu(),
                                 label_map=label_map, color_map=color_map, threshold=0.5, 
                                 label_offset=label_offset, save_path=out_fname)
         batch_count += 1
         if device.type == "cuda" and batch_count % 20 == 0:
             torch.cuda.empty_cache()
     
+    # Métricas personalizadas existentes
+    print("\n--- Métricas Personalizadas ---")
     all_labels = [-1] + sorted(label_map.keys())
-    target_names = ["No Detection"] + [label_map[k] for k in sorted(label_map.keys())]
-    cm = confusion_matrix(all_y_true, all_y_pred, labels=all_labels)
-    report = classification_report(all_y_true, all_y_pred, labels=all_labels,
-                                   target_names=target_names)
-                                   
-    num_classes = len(target_names)
-    fig_size = max(8, 0.5 * num_classes)
-    plt.figure(figsize=(fig_size, fig_size))
-    ax = sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", 
-                     xticklabels=target_names,
-                     yticklabels=target_names)
-    plt.xticks(rotation=45, ha='right')
-    plt.xlabel("Predicción")
-    plt.ylabel("Ground Truth")
-    plt.title("Matriz de Confusión")
-    cm_path = os.path.join(args.base_eval_dir, "confusion_matrix.png")
-    plt.tight_layout()
-    plt.savefig(cm_path)
-    plt.close()
-    print(f"\nMatriz de Confusión guardada en: {cm_path}")
-
-    plt.figure(figsize=(8, 8))
-    plt.text(0.01, 0.05, report, {'fontsize': 10}, fontproperties='monospace')
-    plt.axis('off')
-    plt.title("Reporte de Clasificación (Detecciones emparejadas)")
-    report_path = os.path.join(args.base_eval_dir, "classification_report.png")
-    plt.tight_layout()
-    plt.savefig(report_path)
-    plt.close()
-    print(f"\nReporte de Clasificación guardado en: {report_path}")
+    target_names = ["Background"] + [label_map[k] for k in sorted(label_map.keys())]
     
-    # Generar reporte y gráfica separada para falsos positivos y falsos negativos (casos de no detección)
+    # Prevenir error si no hay detecciones en absoluto
+    if all_y_true and all_y_pred:
+        cm = confusion_matrix(all_y_true, all_y_pred, labels=all_labels)
+        report = classification_report(all_y_true, all_y_pred, labels=all_labels,
+                                       target_names=target_names, zero_division=0)
+                                       
+        num_classes = len(target_names)
+        fig_size = max(8, 0.5 * num_classes)
+        plt.figure(figsize=(fig_size, fig_size))
+        ax = sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", 
+                         xticklabels=target_names,
+                         yticklabels=target_names)
+        plt.xticks(rotation=45, ha='right')
+        plt.xlabel("Predicted Class")
+        plt.ylabel("True Class")
+        plt.title("Matriz de Confusión")
+        cm_path = os.path.join(args.base_eval_dir, "confusion_matrix.png")
+        plt.tight_layout()
+        plt.savefig(cm_path)
+        plt.close()
+        print(f"Matriz de Confusión guardada en: {cm_path}")
+
+        plt.figure(figsize=(8, 8))
+        plt.text(0.01, 0.05, report, {'fontsize': 10}, fontproperties='monospace')
+        plt.axis('off')
+        plt.title("Reporte de Clasificación (Detecciones emparejadas)")
+        report_path = os.path.join(args.base_eval_dir, "classification_report.png")
+        plt.tight_layout()
+        plt.savefig(report_path)
+        plt.close()
+        print(f"Reporte de Clasificación guardado en: {report_path}")
+    else:
+        print("No se generaron detecciones o ground truths, se omiten las métricas de clasificación.")
+
     fp_fn_report = "Reporte de Falsos Positivos y Falsos Negativos (No Detecciones)\n"
     fp_fn_report += "Categoría\tFalsos Positivos\tFalsos Negativos\n"
     for cat_id in sorted(label_map.keys()):
@@ -508,9 +587,8 @@ def evaluate_on_dataset(args, cfg, device):
     fp_fn_report_path = os.path.join(args.base_eval_dir, "fp_fn_report.txt")
     with open(fp_fn_report_path, "w") as f:
         f.write(fp_fn_report)
-    print(f"\nReporte de Falsos Positivos y Falsos Negativos guardado en: {fp_fn_report_path}")
+    print(f"Reporte de Falsos Positivos y Falsos Negativos guardado en: {fp_fn_report_path}")
     
-    # Graficar los contadores de FP y FN por clase
     classes = [label_map[k] for k in sorted(label_map.keys())]
     fp_counts = [fp_counter.get(k, 0) for k in sorted(label_map.keys())]
     fn_counts = [fn_counter.get(k, 0) for k in sorted(label_map.keys())]
@@ -529,7 +607,16 @@ def evaluate_on_dataset(args, cfg, device):
     plt.tight_layout()
     plt.savefig(fp_fn_bar_path)
     plt.close()
-    print(f"\nGráfica de FP y FN guardada en: {fp_fn_bar_path}")
+    print(f"Gráfica de FP y FN guardada en: {fp_fn_bar_path}")
+
+    # Ejecutar evaluación COCO si se solicita
+    if args.coco_eval:
+        pred_json_path = os.path.join(args.base_eval_dir, "coco_predictions.json")
+        with open(pred_json_path, 'w') as f:
+            json.dump(coco_predictions, f)
+        
+        # El objeto 'dataset.coco' es la instancia de la API de COCO para el ground truth
+        run_coco_evaluation(dataset.coco, pred_json_path, args.base_eval_dir)
 
 ########################
 # Función principal
@@ -557,6 +644,8 @@ def main():
                         help="Si se especifica, guarda imágenes de debug comparativas entre predicción y ground truth.")
     parser.add_argument('--output_dir', type=str, default='eval_results',
                         help="Directorio base para guardar las imágenes y métricas.")
+    parser.add_argument('--coco_eval', action='store_true',
+                        help="Si se especifica, ejecuta la evaluación estándar de COCO (mAP).")
     args = parser.parse_args()
     device = torch.device(args.device)
     
@@ -571,7 +660,7 @@ def main():
     else:
         state = checkpoint['model']
     model_instance = cfg.model
-    model_instance.load_state_dict(state)
+    model_instance.load_state_dict(state, strict=False)
     
     if args.draw:
         predicted_images_dir = os.path.join(args.base_eval_dir, "predicted_images")

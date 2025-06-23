@@ -1,5 +1,5 @@
 
-use_amp: True
+use_amp: False
 use_ema: True 
 ema:
   type: ModelEMA
@@ -7,7 +7,7 @@ ema:
   warmups: 2000
 
 
-epoches: 72
+epoches: 200
 clip_max_norm: 0.1
 
 

@@ -174,3 +174,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+#Project specific
+rtdetrv2_pytorch/configs/*
+rtdetrv2_pytorch/dataset/
+rtdetrv2_pytorch/eval_results/
+rtdetrv2_pytorch/output/
