@@ -3,186 +3,148 @@
 
 import torch 
 import torch.nn as nn 
+import PIL
 
 import torchvision
 torchvision.disable_beta_transforms_warning()
-
 import torchvision.transforms.v2 as T
-import torchvision.transforms.v2.functional as F
+from torchvision.tv_tensors import BoundingBoxes
+from torchvision.transforms.v2 import functional as F
 
-import PIL
-import PIL.Image
-from PIL import ImageFilter
-
-from typing import Any, Dict, List, Optional
-
-from .._misc import convert_to_tv_tensor, _boxes_keys
-from .._misc import Image, Video, Mask, BoundingBoxes
-from .._misc import SanitizeBoundingBoxes
+from typing import Any, Dict
 
 from ...core import register
 
-
-RandomPhotometricDistort = register()(T.RandomPhotometricDistort)
-RandomZoomOut = register()(T.RandomZoomOut)
-RandomHorizontalFlip = register()(T.RandomHorizontalFlip)
-Resize = register()(T.Resize)
-# ToImageTensor = register()(T.ToImageTensor)
-# ConvertDtype = register()(T.ConvertDtype)
-# PILToTensor = register()(T.PILToTensor)
-SanitizeBoundingBoxes = register(name='SanitizeBoundingBoxes')(SanitizeBoundingBoxes)
-RandomCrop = register()(T.RandomCrop)
-Normalize = register()(T.Normalize)
-ToImage = register()(T.ToImage)
-ToDtype = register()(T.ToDtype)
-
 @register()
-class EmptyTransform(T.Transform):
-    def __init__(self, ) -> None:
+class RandomPhotometricDistort(nn.Module):
+    def __init__(self, *args, p=0.5, **kwargs):
         super().__init__()
-
-    def forward(self, *inputs):
-        inputs = inputs if len(inputs) > 1 else inputs[0]
-        return inputs
-
-
-@register()
-class PadToSize(T.Pad):
-    _transformed_types = (
-        PIL.Image.Image,
-        Image,
-        Video,
-        Mask,
-        BoundingBoxes,
-    )
-    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        sp = F.get_spatial_size(flat_inputs[0])
-        h, w = self.size[1] - sp[0], self.size[0] - sp[1]
-        self.padding = [0, 0, w, h]
-        return dict(padding=self.padding)
-
-    def __init__(self, size, fill=0, padding_mode='constant') -> None:
-        if isinstance(size, int):
-            size = (size, size)
-        self.size = size
-        super().__init__(0, fill, padding_mode)
-
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:        
-        fill = self._fill[type(inpt)]
-        padding = params['padding']
-        return F.pad(inpt, padding=padding, fill=fill, padding_mode=self.padding_mode)  # type: ignore[arg-type]
-
-    def __call__(self, *inputs: Any) -> Any:
-        outputs = super().forward(*inputs)
-        if len(outputs) > 1 and isinstance(outputs[1], dict):
-            outputs[1]['padding'] = torch.tensor(self.padding)
-        return outputs
-
+        self.transform = T.ColorJitter(*args, **kwargs)
+        self.p = p
+    def forward(self, img, target):
+        if torch.rand(1) < self.p:
+            img = self.transform(img)
+        return img, target
 
 @register()
-class RandomIoUCrop(T.RandomIoUCrop):
-    def __init__(self, min_scale: float = 0.3, max_scale: float = 1, min_aspect_ratio: float = 0.5, max_aspect_ratio: float = 2, sampler_options: Optional[List[float]] = None, trials: int = 40, p: float = 1.0):
-        super().__init__(min_scale, max_scale, min_aspect_ratio, max_aspect_ratio, sampler_options, trials)
-        self.p = p 
-
-    def __call__(self, *inputs: Any) -> Any:
-        if torch.rand(1) >= self.p:
-            return inputs if len(inputs) > 1 else inputs[0]
-
-        return super().forward(*inputs)
-
-
-@register()
-class ConvertBoxes(T.Transform):
-    _transformed_types = (
-        BoundingBoxes,
-    )
-    def __init__(self, fmt='', normalize=False) -> None:
-        super().__init__()
-        self.fmt = fmt
-        self.normalize = normalize
-
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
-        spatial_size = getattr(inpt, _boxes_keys[1])
-        if self.fmt:
-            in_fmt = inpt.format.value.lower()
-            inpt = torchvision.ops.box_convert(inpt, in_fmt=in_fmt, out_fmt=self.fmt.lower())
-            inpt = convert_to_tv_tensor(inpt, key='boxes', box_format=self.fmt.upper(), spatial_size=spatial_size)
-            
-        if self.normalize:
-            inpt = inpt / torch.tensor(spatial_size[::-1]).tile(2)[None]
-
-        return inpt
-
-
-@register()
-class ConvertPILImage(T.Transform):
-    _transformed_types = (
-        PIL.Image.Image,
-    )
-    def __init__(self, dtype='float32', scale=True) -> None:
-        super().__init__()
-        self.dtype = dtype
-        self.scale = scale
-
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
-        inpt = F.pil_to_tensor(inpt)
-        if self.dtype == 'float32':
-            inpt = inpt.float()
-
-        if self.scale:
-            inpt = inpt / 255.
-
-        inpt = Image(inpt)
-
-        return inpt
-    
-@register()
-class RandomGaussianBlur(T.Transform):
+class RandomGaussianBlur(nn.Module):
     def __init__(self, kernel_size=3, sigma=(0.1, 2.0), p=0.2):
         super().__init__()
-        self.kernel_size = kernel_size
-        self.sigma = sigma
+        self.transform = T.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
         self.p = p
-
-    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        # Aplicar desenfoque solo si la clave "image" existe
-        if torch.rand(1) < self.p and "image" in sample:
-            image = sample["image"]
-            if isinstance(image, PIL.Image.Image):
-                radius = torch.empty(1).uniform_(*self.sigma).item()
-                sample["image"] = image.filter(ImageFilter.GaussianBlur(radius))
-        return sample
+    def forward(self, img, target):
+        if torch.rand(1) < self.p:
+            img = self.transform(img)
+        return img, target
 
 @register()
-class RandomNoise(T.Transform):
+class RandomNoise(nn.Module):
     def __init__(self, mean=0.0, std=0.01, p=0.2):
         super().__init__()
         self.mean = mean
         self.std = std
         self.p = p
-
-    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        # Aplicar ruido solo si la clave "image" existe y es un tensor
-        if torch.rand(1) < self.p and "image" in sample:
-            image = sample["image"]
-            if isinstance(image, torch.Tensor):
-                noise = torch.normal(mean=self.mean, std=self.std, size=image.shape).to(image.device)
-                sample["image"] += noise
-        return sample
+    def forward(self, img, target):
+        if torch.rand(1) < self.p:
+            if isinstance(img, torch.Tensor) and img.is_floating_point():
+                noise = torch.normal(mean=self.mean, std=self.std, size=img.shape, device=img.device)
+                img = img + noise
+        return img, target
 
 @register()
-class RandomRotation(T.Transform):
-    def __init__(self, degrees: float, p: float = 0.5):
+class RandomRotation(nn.Module):
+    def __init__(self, degrees, p=0.5, **kwargs):
         super().__init__()
-        self.degrees = degrees
+        self.transform = T.RandomRotation(degrees=degrees, **kwargs)
         self.p = p
+    def forward(self, img, target):
+        if torch.rand(1) < self.p:
+            return self.transform(img, target)
+        return img, target
 
-    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        # Aplicar rotación solo si la clave "image" existe
-        if torch.rand(1) < self.p and "image" in sample:
-            image = sample["image"]
-            if isinstance(image, PIL.Image.Image):
-                angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-                sample["image"] = F.rotate(image, angle)
-        return sample
+@register()
+class RandomZoomOut(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.transform = T.RandomZoomOut(*args, **kwargs)
+    def forward(self, img, target):
+        return self.transform(img, target)
+
+@register()
+class RandomIoUCrop(nn.Module):
+    def __init__(self, *args, p=0.8, **kwargs):
+        super().__init__()
+        self.transform = T.RandomIoUCrop(*args, **kwargs)
+        self.p = p
+    def forward(self, img, target):
+        if torch.rand(1) < self.p:
+            return self.transform(img, target)
+        return img, target
+
+@register()
+class RandomHorizontalFlip(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.transform = T.RandomHorizontalFlip(*args, **kwargs)
+    def forward(self, img, target):
+        return self.transform(img, target)
+
+@register()
+class Resize(nn.Module):
+    def __init__(self, size, **kwargs):
+        super().__init__()
+        self.transform = T.Resize(size=size, **kwargs)
+    def forward(self, img, target):
+        return self.transform(img, target)
+
+@register()
+class SanitizeBoundingBoxes(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.transform = T.SanitizeBoundingBoxes(*args, **kwargs)
+    def forward(self, img, target):
+        return self.transform(img, target)
+
+@register()
+class ConvertBoxes(nn.Module):
+    def __init__(self, fmt='cxcywh', normalize=True):
+        super().__init__()
+        self.fmt = fmt
+        self.normalize = normalize
+
+    def forward(self, img, target):
+        # Primero, nos aseguramos de que las cajas existan y sean del tipo correcto.
+        if 'boxes' in target and isinstance(target['boxes'], BoundingBoxes):
+            boxes = target['boxes']
+            
+            # 1. Convertir formato
+            boxes = F.convert_bounding_box_format(boxes, new_format=self.fmt)
+            
+            # 2. Normalizar manualmente para evitar la llamada ambigua
+            if self.normalize:
+                # Obtenemos el tamaño del lienzo desde el propio objeto BoundingBoxes
+                h, w = boxes.canvas_size
+                if self.fmt == 'cxcywh':
+                    # Normalizar cx, x, w
+                    boxes[:, 0] /= w
+                    boxes[:, 2] /= w
+                    # Normalizar cy, y, h
+                    boxes[:, 1] /= h
+                    boxes[:, 3] /= h
+                else: # asume xyxy
+                    boxes[:, 0::2] /= w
+                    boxes[:, 1::2] /= h
+
+            target['boxes'] = boxes
+        return img, target
+# ------------------------------------------
+
+@register()
+class ToImage(T.ToImage):
+    pass
+        
+@register()
+class ToDtype(T.ToDtype):
+    def __init__(self, dtype, scale=False):
+        torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
+        super().__init__(dtype=torch_dtype, scale=scale)

@@ -26,6 +26,10 @@ class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types):
         assert isinstance(iou_types, (list, tuple))
         coco_gt = copy.deepcopy(coco_gt)
+
+        if 'info' not in coco_gt.dataset:
+            coco_gt.dataset['info'] = []
+        
         self.coco_gt = coco_gt
         self.iou_types = iou_types
         

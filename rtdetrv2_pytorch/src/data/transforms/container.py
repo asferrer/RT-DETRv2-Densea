@@ -1,130 +1,74 @@
 """"Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
-import torch 
-import torch.nn as nn 
+import torch
+import torch.nn as nn
 
 import torchvision
 torchvision.disable_beta_transforms_warning()
 import torchvision.transforms.v2 as T
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from ._transforms import EmptyTransform
 from ...core import register, GLOBAL_CONFIG
 
-print("Registered transformations:", list(GLOBAL_CONFIG.keys()))
 
 @register()
-class Compose(T.Compose):
-    def __init__(self, ops, policy=None) -> None:
+class Compose(nn.Module):
+    def __init__(self, ops, policy=None):
+        super().__init__()
+        
         transforms = []
-        if ops is not None:
+        if ops:
             for op in ops:
-                if isinstance(op, dict):
-                    name = op.pop('type')
-                    
-                    if name in GLOBAL_CONFIG:
-                        module_info = GLOBAL_CONFIG[name]
-                        transform_class = getattr(module_info['_pymodule'], module_info['_name'])
-                    elif hasattr(T, name):
-                        transform_class = getattr(T, name)
-                    else:
-                        raise NameError(f"Transformation '{name}' not found in GLOBAL_CONFIG or torchvision.transforms.v2")
-
-                    if 'dtype' in op and isinstance(op['dtype'], str):
-                        if 'torch.' in op['dtype']:
-                            op['dtype'] = getattr(torch, op['dtype'].split('.')[-1])
-                        else:
-                            op['dtype'] = getattr(torch, op['dtype'])
-                    
-                    transform = transform_class(**op)
-                    transforms.append(transform)
-                    op['type'] = name
-                    
-                elif isinstance(op, nn.Module):
-                    transforms.append(op)
+                op_copy = op.copy()
+                name = op_copy.pop('type')
+                
+                if name in GLOBAL_CONFIG:
+                    module_info = GLOBAL_CONFIG[name]
+                    transform_class = getattr(module_info['_pymodule'], module_info['_name'])
+                elif hasattr(T, name):
+                    transform_class = getattr(T, name)
                 else:
-                    raise ValueError('La operación de transformación no es válida')
-        else:
-            transforms =[EmptyTransform(), ]
- 
-        super().__init__(transforms=transforms)
+                    raise NameError(f"Transformación '{name}' no encontrada.")
 
-        if policy is None:
-            policy = {'name': 'default'}
+                if 'dtype' in op_copy and isinstance(op_copy['dtype'], str):
+                    op_copy['dtype'] = getattr(torch, op_copy['dtype'].split('.')[-1])
 
+                transforms.append(transform_class(**op_copy))
+        
+        self.transforms = nn.ModuleList(transforms)
         self.policy = policy
-        self.global_samples = 0
 
     def forward(self, *inputs: Any) -> Any:
-        return self.get_forward(self.policy['name'])(*inputs)
+        img, target = inputs[0], inputs[1]
 
-    def get_forward(self, name):
-        forwards = {
-            'default': self.default_forward,
-            'stop_epoch': self.stop_epoch_forward,
-            'stop_sample': self.stop_sample_forward,
-        }
-        return forwards[name]
-    
-    def default_forward(self, *inputs: Any) -> Any:
-        img, target = inputs[:2]
-        dataset_obj = inputs[2] if len(inputs) > 2 else None
+        # print("\n" + "="*80)
+        # print("--- INICIO PIPELINE DE TRANSFORMACIONES ---")
+        # print(f"Entrada inicial -> img: {type(img)}, target: {type(target)}")
+        # print("="*80)
 
-        for transform in self.transforms:
-            transform_class_name = type(transform).__name__
+        for i, t in enumerate(self.transforms):
+            transform_name = type(t).__name__
+            # print(f"\n[Paso {i+1}/{len(self.transforms)}] Aplicando '{transform_name}'...")
+            # print(f"  - Antes  -> img: {type(img)}, target: {type(target)}")
             
-            if transform_class_name in ['ConvertPILImage', 'RandomPhotometricDistort', 'RandomGaussianBlur', 'RandomNoise']:
-                img = transform(img)
-            else:
-                img, target = transform(img, target)
-        
-        data_to_transform = (img, target)
-        if dataset_obj is not None:
-            return *data_to_transform, dataset_obj
+            try:
+                img, target = t(img, target)
+                # print(f"  - Después -> img: {type(img)}, target: {type(target)}")
+                # print(f"  -> OK: '{transform_name}' aplicada con éxito.")
+            except Exception as e:
+                # print("\n" + "!"*80)
+                # print(f"!!! ERROR al aplicar la transformación '{transform_name}' !!!")
+                # print(f"!!! Tipo de error: {type(e).__name__} - {e} !!!")
+                # print("!"*80)
+                raise e
+
+        # print("\n" + "="*80)
+        # print("--- FIN PIPELINE DE TRANSFORMACIONES ---")
+        # print("="*80 + "\n")
+
+        if len(inputs) > 2:
+            return img, target, inputs[2]
         else:
-            return data_to_transform
-
-    def stop_epoch_forward(self, *inputs: Any):
-        img, target = inputs[:2]
-        dataset = inputs[2]
-        cur_epoch = dataset.epoch
-        policy_ops = self.policy['ops']
-        policy_epoch = self.policy['epoch']
-
-        for transform in self.transforms:
-            transform_class_name = type(transform).__name__
-            if transform_class_name in policy_ops and cur_epoch >= policy_epoch:
-                pass
-            else:
-                if transform_class_name in ['ConvertPILImage', 'RandomPhotometricDistort', 'RandomGaussianBlur', 'RandomNoise']:
-                    img = transform(img)
-                else:
-                    img, target = transform(img, target)
-        
-        data_to_transform = (img, target)
-        return *data_to_transform, dataset
-
-
-    def stop_sample_forward(self, *inputs: Any):
-        img, target = inputs[:2]
-        dataset = inputs[2]
-        cur_epoch = dataset.epoch
-        policy_ops = self.policy['ops']
-        policy_sample = self.policy['sample']
-
-        for transform in self.transforms:
-            transform_class_name = type(transform).__name__
-            if transform_class_name in policy_ops and self.global_samples >= policy_sample:
-                pass
-            else:
-                if transform_class_name in ['ConvertPILImage', 'RandomPhotometricDistort', 'RandomGaussianBlur', 'RandomNoise']:
-                    img = transform(img)
-                else:
-                    img, target = transform(img, target)
-
-        self.global_samples += 1
-        
-        data_to_transform = (img, target)
-        return *data_to_transform, dataset
+            return img, target

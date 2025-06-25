@@ -99,7 +99,7 @@ Summary of supported models and their performance:
 
 To train the model on marine debris datasets, use:
 ```bash
-python tools/train.py -c /app/RT-DETR/configs/rtdetrv2/rtdetrv2_r18vd_120e_densea_v4.yml -d cuda --seed 21
+python tools/train.py -c /app/RT-DETR/configs/rtdetrv2/rtdetrv2_r18vd_120e_densea_v4.yml -d cuda --seed 21 | tee train_rtdetrv2_r50vd_densea_v8.log
 ```
 
 ## Evaluation Commands
